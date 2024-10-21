@@ -9,7 +9,7 @@ import (
 type CombinedProductDetails struct {
 	ProductReferenceID string   `json:"product_reference_id"`
 	AdvertiserID       string   `json:"advertiser_id"`
-	Price              float64  `json:"price"`
+	Price              float32  `json:"price"`
 	ImagePath          string   `json:"image_path"`
 	Labels             []string `json:"labels"`
 	Description        string   `json:"description,omitempty"`
@@ -18,7 +18,7 @@ type CombinedProductDetails struct {
 }
 
 // NewCombinedProductDetails creates a new CombinedProductDetails instance.
-func NewCombinedProductDetails(productReferenceID, advertiserID string, price float64, imagePath, description, title, updatedAt string) *CombinedProductDetails {
+func NewCombinedProductDetails(productReferenceID, advertiserID string, price float32, imagePath, description, title, updatedAt string) *CombinedProductDetails {
 	return &CombinedProductDetails{
 		ProductReferenceID: productReferenceID,
 		AdvertiserID:       advertiserID,
@@ -44,8 +44,8 @@ func PrepareLabelsMapping(products []CombinedProductDetails, includeLabels bool)
 }
 
 // PreparePriceMapping generates a map for product prices.
-func PreparePriceMapping(products []CombinedProductDetails, includePrice bool) map[string]float64 {
-	priceMapping := make(map[string]float64)
+func PreparePriceMapping(products []CombinedProductDetails, includePrice bool) map[string]float32 {
+	priceMapping := make(map[string]float32)
 	for _, product := range products {
 		if includePrice && product.Price <= 0 {
 			log.Printf("Product %s is missing a valid price.", product.ProductReferenceID)

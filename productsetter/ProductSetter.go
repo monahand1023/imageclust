@@ -1,7 +1,8 @@
-// productsetter/ProductSetter.go
+// ProductSetter/productsetter/ProductSetter.go
 package productsetter
 
 import (
+	"ProductSetter/openai_utils"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,10 +31,13 @@ type ProductSetter struct {
 	Client            *http.Client
 	RekognitionSvc    *rekognitionservice.RekognitionService
 	EmbeddingsModel   *embeddings.AppContext
+	MinClusterSize    int
+	MaxClusterSize    int
+	Mutex             sync.Mutex
 }
 
 // NewProductSetter initializes and returns a new ProductSetter instance
-func NewProductSetter(profileID, authToken string, numberOfDaysLimit int, tempDir string) (*ProductSetter, error) {
+func NewProductSetter(profileID, authToken string, numberOfDaysLimit int, minClusterSize, maxClusterSize int, tempDir string) (*ProductSetter, error) {
 	// Initialize HTTP client with timeout
 	client := &http.Client{
 		Timeout: 30 * time.Second,
@@ -54,7 +59,7 @@ func NewProductSetter(profileID, authToken string, numberOfDaysLimit int, tempDi
 	}
 
 	// Load pre-trained ResNet50 model (ONNX format)
-	modelPath := filepath.Join(tempDir, "models", "resnet50", "resnet50.onnx")
+	modelPath := "resnet50-v1-7.onnx" // Assuming modelPath is based on ProfileID; adjust as needed
 	net, err := embeddings.LoadPretrainedModelONNX(modelPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load ResNet50 ONNX model: %v", err)
@@ -72,42 +77,50 @@ func NewProductSetter(profileID, authToken string, numberOfDaysLimit int, tempDi
 		Client:            client,
 		RekognitionSvc:    rekogSvc,
 		EmbeddingsModel:   appCtx,
+		MinClusterSize:    minClusterSize,
+		MaxClusterSize:    maxClusterSize,
 	}, nil
 }
 
 // Run executes the main workflow of the ProductSetter application
-func (ps *ProductSetter) Run() error {
+func (ps *ProductSetter) Run() (map[int][]string, string, error) {
 	startTime := time.Now()
 	log.Println("Starting ProductSetter run...")
 
 	// Ensure necessary directories exist
 	err := os.MkdirAll(ps.EmbeddingsModel.ImageDir, 0755)
 	if err != nil {
-		return fmt.Errorf("failed to create image directory: %v", err)
+		return nil, "", fmt.Errorf("failed to create image directory: %v", err)
 	}
 
 	err = os.MkdirAll(ps.EmbeddingsModel.CacheDir, 0755)
 	if err != nil {
-		return fmt.Errorf("failed to create cache directory: %v", err)
+		return nil, "", fmt.Errorf("failed to create cache directory: %v", err)
 	}
 
 	// Fetch combined product details
-	productDetails, err := ps.fetchProductDetails()
+	productDetails, err := ps.FetchProductDetails()
 	if err != nil {
-		return fmt.Errorf("failed to fetch product details: %v", err)
+		return nil, "", fmt.Errorf("failed to fetch product details: %v", err)
 	}
 	log.Printf("Fetched %d product details.", len(productDetails))
+
+	// Check if any products were fetched
+	if len(productDetails) == 0 {
+		log.Println("No product details fetched.")
+		return nil, "", fmt.Errorf("no products to process")
+	}
 
 	// Build Label Set from all product labels
 	err = embeddings.BuildLabelSet(getProductRefIDs(productDetails), ps.RekognitionSvc, ps.EmbeddingsModel)
 	if err != nil {
-		return fmt.Errorf("failed to build label set: %v", err)
+		return nil, "", fmt.Errorf("failed to build label set: %v", err)
 	}
 
-	// Create embeddings for all products concurrently
-	embeddingsList, productReferenceIDs, err := ps.createEmbeddingsForAllProducts(productDetails)
+	// Create embeddings for all products
+	embeddingsList, productReferenceIDs, err := ps.CreateEmbeddingsForAllProducts(productDetails)
 	if err != nil {
-		return fmt.Errorf("failed to create embeddings: %v", err)
+		return nil, "", fmt.Errorf("failed to create embeddings: %v", err)
 	}
 	log.Printf("Created embeddings for %d products.", len(embeddingsList))
 
@@ -115,36 +128,36 @@ func (ps *ProductSetter) Run() error {
 	clusters, success := clustering.PerformClusteringWithConstraints(
 		embeddingsList,
 		productReferenceIDs,
-		3,  // minSize
-		10, // maxSize
+		ps.MinClusterSize,
+		ps.MaxClusterSize,
 	)
 	if !success {
 		log.Println("Clustering failed due to constraints.")
-		return fmt.Errorf("clustering failed due to constraints")
+		return nil, "", fmt.Errorf("clustering failed due to constraints")
 	}
 	log.Printf("Formed %d clusters.", len(clusters))
 
 	// Prepare ClusterDetails for HTML generation
-	clusterDetails := ps.prepareClusterDetails(clusters, productDetails)
+	clusterDetails := ps.PrepareClusterDetails(clusters, productDetails)
 
 	// Generate the HTML output
 	htmlOutputPath, err := utils.GenerateHTMLOutput(
 		clusterDetails,
 		ps.TempDir,
-		"localhost",
-		5003,
+		"localhost", // Default Host, can be parameterized if needed
+		5003,        // Default Port, can be parameterized if needed
 	)
 	if err != nil {
-		return fmt.Errorf("failed to generate HTML output: %v", err)
+		return nil, "", fmt.Errorf("failed to generate HTML output: %v", err)
 	}
 	log.Printf("HTML output generated successfully. Access it at: file://%s\n", htmlOutputPath)
 
 	log.Printf("Total execution time: %v", time.Since(startTime))
-	return nil
+	return clusters, htmlOutputPath, nil
 }
 
-// createEmbeddingsForAllProducts generates embeddings for all products concurrently
-func (ps *ProductSetter) createEmbeddingsForAllProducts(productDetails []models.CombinedProductDetails) ([][]float32, []string, error) {
+// CreateEmbeddingsForAllProducts generates embeddings for all products concurrently
+func (ps *ProductSetter) CreateEmbeddingsForAllProducts(productDetails []models.CombinedProductDetails) ([][]float32, []string, error) {
 	embeddingsList := make([][]float32, len(productDetails))
 	productReferenceIDs := make([]string, len(productDetails))
 	var mu sync.Mutex
@@ -194,8 +207,8 @@ func (ps *ProductSetter) createEmbeddingsForAllProducts(productDetails []models.
 	return embeddingsList, productReferenceIDs, nil
 }
 
-// fetchProductDetails retrieves product details from the API, downloads images, and fetches labels
-func (ps *ProductSetter) fetchProductDetails() ([]models.CombinedProductDetails, error) {
+// FetchProductDetails retrieves product details from the API, downloads images, and fetches labels
+func (ps *ProductSetter) FetchProductDetails() ([]models.CombinedProductDetails, error) {
 	combinedProductDetailsList := make([]models.CombinedProductDetails, 0)
 	var mu sync.Mutex
 
@@ -207,7 +220,7 @@ func (ps *ProductSetter) fetchProductDetails() ([]models.CombinedProductDetails,
 		// Append next token if present
 		activitiesURL := baseURL
 		if nextToken != "" {
-			activitiesURL += fmt.Sprintf("&next=%s", urlEncode(nextToken))
+			activitiesURL += fmt.Sprintf("&next=%s", utils.URLEncode(nextToken))
 		}
 
 		// Build the HTTP GET request
@@ -261,15 +274,16 @@ func (ps *ProductSetter) fetchProductDetails() ([]models.CombinedProductDetails,
 				productDetail, err := ps.fetchProductDetail(productRefID)
 				if err != nil {
 					log.Printf("Error fetching product detail for %s: %v", productRefID, err)
-					return
+					return // Skip this product on error
 				}
 
 				// Detect labels using AWS Rekognition
 				labels, err := ps.RekognitionSvc.DetectLabels(productDetail.ImagePath, 10, 75.0)
 				if err != nil {
 					log.Printf("Error detecting labels for %s: %v", productRefID, err)
-					return
+					return // Skip this product on error
 				}
+
 				// Convert labels to []string
 				labelNames := make([]string, len(labels))
 				for i, label := range labels {
@@ -277,7 +291,7 @@ func (ps *ProductSetter) fetchProductDetails() ([]models.CombinedProductDetails,
 				}
 				productDetail.Labels = labelNames
 
-				// Append to the combined list
+				// Only append the product if no errors occurred during the fetch or label detection process
 				mu.Lock()
 				combinedProductDetailsList = append(combinedProductDetailsList, *productDetail)
 				mu.Unlock()
@@ -294,13 +308,71 @@ func (ps *ProductSetter) fetchProductDetails() ([]models.CombinedProductDetails,
 		}
 	}
 
+	// Return the list of valid product details
 	return combinedProductDetailsList, nil
+}
+
+// PrepareClusterDetails organizes cluster information for HTML generation
+func (ps *ProductSetter) PrepareClusterDetails(clusters map[int][]string, productDetails []models.CombinedProductDetails) map[string]utils.ClusterDetails {
+	clusterDetails := make(map[string]utils.ClusterDetails)
+
+	for clusterID, products := range clusters {
+		clusterKey := fmt.Sprintf("Cluster-%d", clusterID)
+		clusterDetails[clusterKey] = utils.ClusterDetails{
+			Title:               "",
+			CatchyPhrase:        "",
+			Labels:              "",
+			Images:              []string{},
+			ProductReferenceIDs: products,
+		}
+	}
+
+	// Populate each cluster's details
+	for clusterKey, details := range clusterDetails {
+		// Aggregate labels
+		labelsSet := make(map[string]struct{})
+		for _, pid := range details.ProductReferenceIDs {
+			product := models.ProductDetailsMap(pid, productDetails)
+			if product.ProductReferenceID != "" {
+				for _, label := range product.Labels {
+					labelsSet[label] = struct{}{}
+				}
+			}
+		}
+
+		// Convert labels set to a comma-separated string
+		labelsList := make([]string, 0, len(labelsSet))
+		for label := range labelsSet {
+			labelsList = append(labelsList, label)
+		}
+		aggregatedLabels := strings.Join(labelsList, ", ")
+		details.Labels = aggregatedLabels
+
+		// **Generate Title and Catchy Phrase using GPT**
+		title, catchyPhrase := openai_utils.GenerateTitleAndCatchyPhrase(aggregatedLabels, 3)
+		details.Title = title
+		details.CatchyPhrase = catchyPhrase
+
+		// Gather image filenames
+		for _, pid := range details.ProductReferenceIDs {
+			product := models.ProductDetailsMap(pid, productDetails)
+			if product.ProductReferenceID != "" {
+				imageFilename := filepath.Base(product.ImagePath)
+				details.Images = append(details.Images, imageFilename)
+			}
+		}
+
+		// Update the cluster details
+		clusterDetails[clusterKey] = details
+	}
+
+	return clusterDetails
 }
 
 // fetchProductDetail retrieves detailed information for a single product and downloads its image
 func (ps *ProductSetter) fetchProductDetail(productRefID string) (*models.CombinedProductDetails, error) {
 	// Encode the productRefID
-	encodedProductRefID := urlEncode(productRefID)
+	encodedProductRefID := utils.URLEncode(productRefID)
 
 	// Construct the product detail API URL
 	productDetailURL := fmt.Sprintf("http://qa-rs-product-service.rslocal/v1/retailer_product_references?ids[]=%s", encodedProductRefID)
@@ -341,15 +413,21 @@ func (ps *ProductSetter) fetchProductDetail(productRefID string) (*models.Combin
 
 	// Extract product details
 	var retailerProduct struct {
-		RetailerID  string  `json:"retailer_id"`
-		Price       float64 `json:"price"`
-		Description string  `json:"description"`
-		Title       string  `json:"title"`
-		UpdatedAt   string  `json:"updated_at"`
+		RetailerID  string `json:"retailer_id"`
+		Price       string `json:"price"` // Updated: expects a string
+		Description string `json:"description"`
+		Title       string `json:"title"`
+		UpdatedAt   string `json:"updated_at"`
 	}
 	err = json.Unmarshal(productDetailResp.RetailerProducts[0], &retailerProduct)
 	if err != nil {
 		return nil, fmt.Errorf("failed to unmarshal retailer_product: %v", err)
+	}
+
+	// Convert Price from string to float32
+	priceFloat, err := strconv.ParseFloat(retailerProduct.Price, 32)
+	if err != nil {
+		return nil, fmt.Errorf("invalid price format for %s: %v", productRefID, err)
 	}
 
 	// Extract product image URL
@@ -371,7 +449,7 @@ func (ps *ProductSetter) fetchProductDetail(productRefID string) (*models.Combin
 	combinedProduct := models.NewCombinedProductDetails(
 		productRefID,
 		retailerProduct.RetailerID,
-		retailerProduct.Price,
+		float32(priceFloat),
 		imagePath,
 		retailerProduct.Description,
 		retailerProduct.Title,
@@ -385,6 +463,15 @@ func (ps *ProductSetter) fetchProductDetail(productRefID string) (*models.Combin
 func (ps *ProductSetter) downloadImage(imageURL, productRefID string) (string, error) {
 	if imageURL == "" {
 		return "", fmt.Errorf("empty image URL for %s", productRefID)
+	}
+
+	// Ensure the images directory exists
+	imagesDir := ps.EmbeddingsModel.ImageDir
+	if _, err := os.Stat(imagesDir); os.IsNotExist(err) {
+		err := os.MkdirAll(imagesDir, 0755) // Create the images directory if it doesn't exist
+		if err != nil {
+			return "", fmt.Errorf("failed to create images directory: %v", err)
+		}
 	}
 
 	// Build the HTTP GET request for the image
@@ -406,7 +493,7 @@ func (ps *ProductSetter) downloadImage(imageURL, productRefID string) (string, e
 	}
 
 	// Generate a sanitized file path
-	sanitizedProductID := sanitizeFilename(productRefID)
+	sanitizedProductID := utils.SanitizeFilename(productRefID)
 	imageFilename := fmt.Sprintf("%s.jpg", sanitizedProductID)
 	imagePath := filepath.Join(ps.EmbeddingsModel.ImageDir, imageFilename)
 
@@ -424,80 +511,6 @@ func (ps *ProductSetter) downloadImage(imageURL, productRefID string) (string, e
 	}
 
 	return imagePath, nil
-}
-
-// prepareClusterDetails organizes cluster information for HTML generation
-func (ps *ProductSetter) prepareClusterDetails(clusters map[int][]string, productDetails []models.CombinedProductDetails) map[string]utils.ClusterDetails {
-	clusterDetails := make(map[string]utils.ClusterDetails)
-
-	for clusterID, products := range clusters {
-		clusterKey := fmt.Sprintf("Cluster-%d", clusterID)
-		clusterDetails[clusterKey] = utils.ClusterDetails{
-			Title:               "",
-			CatchyPhrase:        "",
-			Labels:              "",
-			Images:              []string{},
-			ProductReferenceIDs: products,
-		}
-	}
-
-	// Populate each cluster's details
-	for clusterKey, details := range clusterDetails {
-		// Placeholder for Title and CatchyPhrase
-		details.Title = fmt.Sprintf("Cluster %s Title", clusterKey)
-		details.CatchyPhrase = fmt.Sprintf("Cluster %s Catchy Phrase", clusterKey)
-
-		// Aggregate labels
-		labelsSet := make(map[string]struct{})
-		for _, pid := range details.ProductReferenceIDs {
-			product := models.ProductDetailsMap(pid, productDetails)
-			if product != nil {
-				for _, label := range product.Labels {
-					labelsSet[label] = struct{}{}
-				}
-			}
-		}
-
-		// Convert labels set to a comma-separated string
-		labelsList := make([]string, 0, len(labelsSet))
-		for label := range labelsSet {
-			labelsList = append(labelsList, label)
-		}
-		details.Labels = strings.Join(labelsList, ", ")
-
-		// Gather image filenames
-		for _, pid := range details.ProductReferenceIDs {
-			product := models.ProductDetailsMap(pid, productDetails)
-			if product != nil {
-				imageFilename := filepath.Base(product.ImagePath)
-				details.Images = append(details.Images, imageFilename)
-			}
-		}
-
-		// Update the cluster details
-		clusterDetails[clusterKey] = details
-	}
-
-	return clusterDetails
-}
-
-// sanitizeFilename replaces invalid characters in filenames
-func sanitizeFilename(name string) string {
-	// Replace any character that is not a letter, number, dot, or dash with an underscore
-	return strings.Map(func(r rune) rune {
-		if (r >= 'a' && r <= 'z') ||
-			(r >= 'A' && r <= 'Z') ||
-			(r >= '0' && r <= '9') ||
-			r == '.' || r == '-' {
-			return r
-		}
-		return '_'
-	}, name)
-}
-
-// urlEncode encodes a string for safe inclusion in URLs
-func urlEncode(s string) string {
-	return strings.ReplaceAll(s, " ", "%20")
 }
 
 // getProductRefIDs extracts product reference IDs from product details.

@@ -17,8 +17,7 @@ func main() {
 
 	// Register handlers for various routes
 	router.HandleFunc("/cluster_and_generate", handlers.ClusterAndGenerateHandler).Methods("POST")
-	router.HandleFunc("/publish", handlers.PublishHandler).Methods("POST")
-	router.HandleFunc("/generate_html_output", handlers.GenerateHTMLOutputHandler).Methods("POST")
+	//	router.HandleFunc("/publish", handlers.PublishHandler).Methods("POST")
 	router.HandleFunc("/", htmlFormHandler).Methods("GET") // Serve the HTML form on the root path
 
 	// Define the server address and port
@@ -38,36 +37,26 @@ func main() {
 func htmlFormHandler(w http.ResponseWriter, r *http.Request) {
 	// Template for the HTML form
 	formTemplate := `
+<!-- main.go (assuming it serves the HTML form) -->
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <title>Go Server Front-End</title>
+    <title>Product Clustering</title>
 </head>
 <body>
-<h1 align="center">Clustering Service Demo</h1>
-<form id="dataForm" enctype="multipart/form-data" method="post" action="/cluster_and_generate">
-    <label for="authToken">Auth Token:</label>
-    <input type="text" id="authToken" name="auth_token" required>
-    <br><br>
+    <h1>Cluster Products</h1>
+    <form action="/cluster_and_generate" method="post" enctype="multipart/form-data">
+        <label for="profile_id">Profile ID:</label><br>
+        <input type="text" id="profile_id" name="profile_id" required value="b5815d12-50e5-11ee-8376-940c556626de"><br><br>
 
-    <label for="profileId">Profile ID:</label>
-    <input type="text" id="profileId" name="profile_id" value="b5815d12-50e5-11ee-8376-940c556626de" required>
-    <br><br>
+        <label for="auth_token">Auth Token:</label><br>
+        <input type="text" id="auth_token" name="auth_token" required><br><br>
 
-    <label for="numberOfDays">Number of Days of Data:</label>
-    <input type="number" id="numberOfDays" name="numberOfDays" value="200" min="1" required>
-    <br><br>
+        <label for="number_of_days_limit">Number of Days Limit:</label><br>
+        <input type="number" id="number_of_days_limit" name="number_of_days_limit" min="1" value="30" required><br><br>
 
-    <label for="images">Upload Images:</label>
-    <input type="file" id="images" name="images" multiple>
-    <br><br>
-
-    <button type="submit">Cluster and Generate</button>
-</form>
-
-<pre id="response"></pre>
-
+        <input type="submit" value="Cluster and Generate">
+    </form>
 </body>
 </html>
 `

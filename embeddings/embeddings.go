@@ -2,11 +2,12 @@
 package embeddings
 
 import (
-	"ProductSetter/models" // Import the models package
+	"ProductSetter/models"
 	"ProductSetter/rekognitionservice"
 	"encoding/json"
 	"fmt"
 	"image"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -22,6 +23,7 @@ type AppContext struct {
 	Mutex         sync.Mutex          // To handle concurrent access to shared resources
 	LabelsMapping map[string][]string // Map of productRefID -> labels
 	Net           gocv.Net            // OpenCV DNN network for ResNet50
+	NetMutex      sync.Mutex
 }
 
 // LoadPretrainedModelONNX loads the pre-trained ResNet50 model in ONNX format using GoCV
@@ -41,25 +43,57 @@ func LoadPretrainedModelONNX(modelPath string) (gocv.Net, error) {
 
 // PreprocessImage resizes and normalizes the image to match ResNet50 input requirements
 func PreprocessImage(imagePath string) (gocv.Mat, error) {
+	log.Printf("Preprocessing image: %s", imagePath)
+
 	// Load the image using GoCV
 	img := gocv.IMRead(imagePath, gocv.IMReadColor)
 	if img.Empty() {
-		return img, fmt.Errorf("failed to read image: %s", imagePath)
+		return gocv.NewMat(), fmt.Errorf("failed to read image: %s. The image file might be corrupt or unreadable.", imagePath)
 	}
 	defer img.Close()
 
 	// Resize to 224x224 (standard for ResNet50)
 	resized := gocv.NewMat()
+	defer resized.Close()
+
 	gocv.Resize(img, &resized, image.Pt(224, 224), 0, 0, gocv.InterpolationLinear)
+	if resized.Empty() {
+		return gocv.NewMat(), fmt.Errorf("failed to resize image: %s. There might be an issue with the image content.", imagePath)
+	}
 
 	// Convert image to RGB
-	gocv.CvtColor(resized, &resized, gocv.ColorBGRToRGB)
+	rgb := gocv.NewMat()
+	defer rgb.Close()
+
+	gocv.CvtColor(resized, &rgb, gocv.ColorBGRToRGB)
+	if rgb.Empty() {
+		return gocv.NewMat(), fmt.Errorf("failed to convert image to RGB: %s. Image data might be invalid.", imagePath)
+	}
 
 	// Create a blob from the image
-	// Parameters: scale factor, size, mean subtraction, swap RB channels, crop
-	blob := gocv.BlobFromImage(resized, 1.0/255.0, image.Pt(224, 224), gocv.NewScalar(0, 0, 0, 0), false, false)
+	blob := gocv.NewMat()
+	defer blob.Close()
 
-	return blob, nil
+	blob = gocv.BlobFromImage(rgb, 1.0/255.0, image.Pt(224, 224), gocv.NewScalar(0, 0, 0, 0), false, false)
+	if blob.Empty() {
+		return gocv.NewMat(), fmt.Errorf("failed to create blob from image: %s. Blob generation failed.", imagePath)
+	}
+
+	// Check the shape of the blob
+	blobSize := blob.Size()
+	if len(blobSize) != 4 || blobSize[0] != 1 || blobSize[1] != 3 || blobSize[2] != 224 || blobSize[3] != 224 {
+		return gocv.NewMat(), fmt.Errorf("invalid blob shape for image %s: expected (1, 3, 224, 224), got %v", imagePath, blobSize)
+	}
+
+	// Return a clone of the blob to ensure it's not closed prematurely
+	finalBlob := blob.Clone()
+
+	if finalBlob.Empty() {
+		return gocv.NewMat(), fmt.Errorf("final blob is empty after processing image: %s. This might indicate a deeper issue with image preprocessing.", imagePath)
+	}
+
+	log.Printf("Successfully preprocessed image: %s", imagePath)
+	return finalBlob, nil
 }
 
 // GetImageEmbedding generates an image embedding using ResNet50
@@ -71,13 +105,15 @@ func GetImageEmbedding(appCtx *AppContext, imagePath string) ([]float32, error) 
 	}
 	defer blob.Close()
 
+	// Lock the Net object
+	appCtx.NetMutex.Lock()
+	defer appCtx.NetMutex.Unlock()
+
 	// Set the input to the network
 	appCtx.Net.SetInput(blob, "")
 
 	// Forward pass to get the output from the desired layer
-	// For ResNet50 in ONNX, typically the last layer before softmax is 'output' or similar
-	// You may need to verify the exact layer name using a tool like Netron
-	outputLayer := "output" // Update this based on model's output name
+	outputLayer := "resnetv17_dense0_fwd"
 	embeddingMat := appCtx.Net.Forward(outputLayer)
 	if embeddingMat.Empty() {
 		return nil, fmt.Errorf("failed to generate embedding for image: %s", imagePath)
@@ -100,13 +136,15 @@ func GetImageEmbedding(appCtx *AppContext, imagePath string) ([]float32, error) 
 
 // CreateProductEmbedding generates an embedding for a product using ResNet50 and Rekognition labels
 func CreateProductEmbedding(productRefID string, appCtx *AppContext, rekognitionSvc *rekognitionservice.RekognitionService) ([]float32, error) {
+	log.Printf("Creating product embedding for: %s", productRefID)
+
 	// Check if the combined embedding is already cached
 	combinedEmbedding, found, err := CheckCache(productRefID, appCtx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to check cache: %v", err)
 	}
 	if found {
-		fmt.Printf("Using cached combined embedding for product %s\n", productRefID)
+		log.Printf("Using cached combined embedding for product: %s", productRefID)
 		return combinedEmbedding, nil
 	}
 
@@ -146,6 +184,7 @@ func CreateProductEmbedding(productRefID string, appCtx *AppContext, rekognition
 		return nil, fmt.Errorf("failed to store embedding in cache: %v", err)
 	}
 
+	log.Printf("Successfully created and cached embedding for product: %s", productRefID)
 	return combinedEmbedding, nil
 }
 
@@ -214,6 +253,7 @@ func StoreInCache(productRefID string, embedding []float32, appCtx *AppContext) 
 
 // BuildLabelSet constructs a set of all possible labels from the dataset
 func BuildLabelSet(productRefIDs []string, rekognitionSvc *rekognitionservice.RekognitionService, appCtx *AppContext) error {
+	log.Println("Building label set from product images")
 	labelSet := make(map[string]int)
 	index := 0
 
@@ -238,6 +278,7 @@ func BuildLabelSet(productRefIDs []string, rekognitionSvc *rekognitionservice.Re
 
 	// Assign the built label set to the app context
 	appCtx.LabelSet = labelSet
+	log.Printf("Label set built with %d unique labels", len(labelSet))
 	return nil
 }
 

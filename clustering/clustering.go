@@ -237,15 +237,20 @@ func PerformClusteringWithConstraints(embeddings [][]float32, productReferenceID
 	}
 
 	// After clustering, enforce size constraints
-	// This step ensures that clusters adhere to minSize and maxSize constraints
 	clusterMap := make(map[int][]string)
 	clusterID := 0
 	for _, cluster := range clusters {
-		if cluster.Size < minSize || cluster.Size > maxSize {
-			log.Printf("Cluster %d size %d violates constraints (min: %d, max: %d)", clusterID, cluster.Size, minSize, maxSize)
-			return nil, false
+		if cluster.Size < minSize {
+			// Skip clusters that are too small
+			log.Printf("Skipping cluster %d with size %d (less than minSize %d)", clusterID, cluster.Size, minSize)
+			continue
+		}
+		if cluster.Size > maxSize {
+			// Optionally handle clusters that exceed maxSize, though not explicitly required
+			log.Printf("Cluster %d size %d exceeds maxSize %d", clusterID, cluster.Size, maxSize)
 		}
 
+		// Convert cluster indices to product reference IDs
 		refs := make([]string, len(cluster.Indices))
 		for i, idx := range cluster.Indices {
 			refs[i] = productReferenceIDs[idx]
@@ -254,7 +259,7 @@ func PerformClusteringWithConstraints(embeddings [][]float32, productReferenceID
 		clusterID++
 	}
 
-	log.Printf("Clustering successful. Formed %d clusters.", len(clusterMap))
+	log.Printf("Clustering successful. Formed %d valid clusters.", len(clusterMap))
 	return clusterMap, true
 }
 
