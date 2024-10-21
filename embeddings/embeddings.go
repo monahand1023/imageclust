@@ -2,11 +2,11 @@
 package embeddings
 
 import (
+	"ProductSetter/models" // Import the models package
 	"ProductSetter/rekognitionservice"
 	"encoding/json"
 	"fmt"
 	"image"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sync"
@@ -21,15 +21,15 @@ type AppContext struct {
 	LabelSet      map[string]int      // Set of all possible labels for encoding
 	Mutex         sync.Mutex          // To handle concurrent access to shared resources
 	LabelsMapping map[string][]string // Map of productRefID -> labels
-	Net           gocv.Net            // OpenCV DNN network
+	Net           gocv.Net            // OpenCV DNN network for ResNet50
 }
 
-// LoadPretrainedModel loads the pre-trained ResNet50 model using GoCV
-func LoadPretrainedModel(modelPath string) (gocv.Net, error) {
-	// Read the network using the ONNX model
-	net := gocv.ReadNet(modelPath, "")
+// LoadPretrainedModelONNX loads the pre-trained ResNet50 model in ONNX format using GoCV
+func LoadPretrainedModelONNX(modelPath string) (gocv.Net, error) {
+	// Read the network using the ResNet50 ONNX model
+	net := gocv.ReadNetFromONNX(modelPath)
 	if net.Empty() {
-		return net, fmt.Errorf("failed to load ResNet50 model from: %s", modelPath)
+		return net, fmt.Errorf("failed to load ResNet50 ONNX model from: %s", modelPath)
 	}
 
 	// Set preferable backend and target to CPU
@@ -75,8 +75,10 @@ func GetImageEmbedding(appCtx *AppContext, imagePath string) ([]float32, error) 
 	appCtx.Net.SetInput(blob, "")
 
 	// Forward pass to get the output from the desired layer
-	// For ResNet50, we can use the 'avg_pool' layer for embeddings
-	embeddingMat := appCtx.Net.Forward("avg_pool")
+	// For ResNet50 in ONNX, typically the last layer before softmax is 'output' or similar
+	// You may need to verify the exact layer name using a tool like Netron
+	outputLayer := "output" // Update this based on model's output name
+	embeddingMat := appCtx.Net.Forward(outputLayer)
 	if embeddingMat.Empty() {
 		return nil, fmt.Errorf("failed to generate embedding for image: %s", imagePath)
 	}
@@ -96,8 +98,8 @@ func GetImageEmbedding(appCtx *AppContext, imagePath string) ([]float32, error) 
 	return embedding, nil
 }
 
-// CreateProductEmbedding generates an embedding for a product using both image embeddings and Rekognition labels
-func CreateProductEmbedding(productRefID string, appCtx *AppContext, rekognitionSvc *rekognitionservice.RekognitionService) ([]float64, error) {
+// CreateProductEmbedding generates an embedding for a product using ResNet50 and Rekognition labels
+func CreateProductEmbedding(productRefID string, appCtx *AppContext, rekognitionSvc *rekognitionservice.RekognitionService) ([]float32, error) {
 	// Check if the combined embedding is already cached
 	combinedEmbedding, found, err := CheckCache(productRefID, appCtx)
 	if err != nil {
@@ -111,7 +113,7 @@ func CreateProductEmbedding(productRefID string, appCtx *AppContext, rekognition
 	// Get the image path
 	imagePath := filepath.Join(appCtx.ImageDir, productRefID+".jpg")
 
-	// 1. Generate an image embedding using the pre-trained model
+	// 1. Generate an image embedding using the pre-trained ResNet50 model
 	imageEmbedding, err := GetImageEmbedding(appCtx, imagePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate image embedding for product %s: %v", productRefID, err)
@@ -148,8 +150,8 @@ func CreateProductEmbedding(productRefID string, appCtx *AppContext, rekognition
 }
 
 // GenerateLabelVector converts labels into a one-hot encoded vector based on the full label set
-func GenerateLabelVector(labels []string, labelSet map[string]int) []float64 {
-	labelVector := make([]float64, len(labelSet))
+func GenerateLabelVector(labels []string, labelSet map[string]int) []float32 {
+	labelVector := make([]float32, len(labelSet))
 	for _, label := range labels {
 		if idx, exists := labelSet[label]; exists {
 			labelVector[idx] = 1.0
@@ -159,30 +161,16 @@ func GenerateLabelVector(labels []string, labelSet map[string]int) []float64 {
 }
 
 // CombineEmbeddings merges the image embedding and label vector into a single embedding
-func CombineEmbeddings(imageEmbedding []float32, labelVector []float64) []float64 {
-	combined := make([]float64, len(imageEmbedding)+len(labelVector))
-	for i, val := range imageEmbedding {
-		combined[i] = float64(val)
-	}
-	copy(combined[len(imageEmbedding):], labelVector)
+func CombineEmbeddings(embedding []float32, labelVector []float32) []float32 {
+	// Combine the two vectors
+	combined := make([]float32, len(embedding)+len(labelVector))
+	copy(combined, embedding)
+	copy(combined[len(embedding):], labelVector)
 	return combined
 }
 
-// CreateEmbeddingsForAllProducts creates embeddings for all products using both the pre-trained model and Rekognition labels
-func CreateEmbeddingsForAllProducts(productRefIDs []string, appCtx *AppContext, rekognitionSvc *rekognitionservice.RekognitionService) ([][]float64, error) {
-	embeddingsList := [][]float64{}
-	for _, productRefID := range productRefIDs {
-		combinedEmbedding, err := CreateProductEmbedding(productRefID, appCtx, rekognitionSvc)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create embedding for product %s: %v", productRefID, err)
-		}
-		embeddingsList = append(embeddingsList, combinedEmbedding)
-	}
-	return embeddingsList, nil
-}
-
 // CheckCache retrieves a combined embedding from the cache if it exists
-func CheckCache(productRefID string, appCtx *AppContext) ([]float64, bool, error) {
+func CheckCache(productRefID string, appCtx *AppContext) ([]float32, bool, error) {
 	cacheFilePath := filepath.Join(appCtx.CacheDir, productRefID+"_embedding.json")
 
 	// Check if cache file exists
@@ -192,13 +180,13 @@ func CheckCache(productRefID string, appCtx *AppContext) ([]float64, bool, error
 	}
 
 	// Read cached embedding
-	cacheData, err := ioutil.ReadFile(cacheFilePath)
+	cacheData, err := os.ReadFile(cacheFilePath)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to read cache file: %v", err)
 	}
 
 	// Parse cached embedding
-	var embedding []float64
+	var embedding []float32
 	if err := json.Unmarshal(cacheData, &embedding); err != nil {
 		return nil, false, fmt.Errorf("failed to parse cache file: %v", err)
 	}
@@ -207,7 +195,7 @@ func CheckCache(productRefID string, appCtx *AppContext) ([]float64, bool, error
 }
 
 // StoreInCache saves a combined embedding to the cache
-func StoreInCache(productRefID string, embedding []float64, appCtx *AppContext) error {
+func StoreInCache(productRefID string, embedding []float32, appCtx *AppContext) error {
 	cacheFilePath := filepath.Join(appCtx.CacheDir, productRefID+"_embedding.json")
 
 	// Convert embedding to JSON
@@ -217,7 +205,7 @@ func StoreInCache(productRefID string, embedding []float64, appCtx *AppContext) 
 	}
 
 	// Write to cache file
-	if err := ioutil.WriteFile(cacheFilePath, cacheData, 0644); err != nil {
+	if err := os.WriteFile(cacheFilePath, cacheData, 0644); err != nil {
 		return fmt.Errorf("failed to write cache file: %v", err)
 	}
 
@@ -251,4 +239,14 @@ func BuildLabelSet(productRefIDs []string, rekognitionSvc *rekognitionservice.Re
 	// Assign the built label set to the app context
 	appCtx.LabelSet = labelSet
 	return nil
+}
+
+// ProductDetailsMap retrieves a product's details by its reference ID.
+func ProductDetailsMap(pid string, productDetails []models.CombinedProductDetails) models.CombinedProductDetails {
+	for _, product := range productDetails {
+		if product.ProductReferenceID == pid {
+			return product
+		}
+	}
+	return models.CombinedProductDetails{}
 }

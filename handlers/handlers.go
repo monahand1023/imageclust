@@ -23,7 +23,7 @@ import (
 // AppContext holds the application-wide context and shared resources.
 type AppContext struct {
 	Config               map[string]interface{}
-	CurrentEmbeddings    [][]float64
+	CurrentEmbeddings    [][]float32
 	CurrentProductRefIDs []string
 	Clusters             map[string]utils.ClusterDetails // Updated to use utils.ClusterDetails
 	LabelsMapping        map[string][]string
@@ -114,7 +114,7 @@ func ClusterAndGenerateHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Missing or invalid 'model_path' in data.", http.StatusBadRequest)
 		return
 	}
-	appCtx.Model, err = embeddings.LoadPretrainedModel(modelPath)
+	appCtx.Model, err = embeddings.LoadPretrainedModelONNX(modelPath)
 	if err != nil {
 		http.Error(w, "Failed to load pre-trained model", http.StatusInternalServerError)
 		return
@@ -195,7 +195,7 @@ func ClusterAndGenerateHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Generate embeddings for all products
-	embeddingsList := [][]float64{}
+	embeddingsList := [][]float32{}
 	for _, productRefID := range productReferenceIDs {
 		combinedEmbedding, err := embeddings.CreateProductEmbedding(
 			productRefID,

@@ -5,20 +5,18 @@ import (
 	"fmt"
 	"log"
 	"math"
-
-	"gonum.org/v1/gonum/floats"
 )
 
 // Cluster represents a cluster of data points.
 type Cluster struct {
 	Indices  []int     // Indices of data points in the cluster
 	Size     int       // Number of data points in the cluster
-	Centroid []float64 // Centroid of the cluster
+	Centroid []float32 // Centroid of the cluster
 }
 
 // NewCluster creates a new cluster with a single data point.
-func NewCluster(index int, embedding []float64) Cluster {
-	centroid := make([]float64, len(embedding))
+func NewCluster(index int, embedding []float32) Cluster {
+	centroid := make([]float32, len(embedding))
 	copy(centroid, embedding)
 	return Cluster{
 		Indices:  []int{index},
@@ -36,9 +34,9 @@ func MergeClusters(a, b Cluster) Cluster {
 	size := a.Size + b.Size
 
 	// New centroid
-	centroid := make([]float64, len(a.Centroid))
+	centroid := make([]float32, len(a.Centroid))
 	for i := range centroid {
-		centroid[i] = (float64(a.Size)*a.Centroid[i] + float64(b.Size)*b.Centroid[i]) / float64(size)
+		centroid[i] = (float32(a.Size)*a.Centroid[i] + float32(b.Size)*b.Centroid[i]) / float32(size)
 	}
 
 	return Cluster{
@@ -60,11 +58,11 @@ func RemoveClusters(clusters []Cluster, i, j int) []Cluster {
 }
 
 // ComputeInitialDistanceMatrix computes the initial distance matrix between clusters.
-func ComputeInitialDistanceMatrix(clusters []Cluster) [][]float64 {
+func ComputeInitialDistanceMatrix(clusters []Cluster) [][]float32 {
 	n := len(clusters)
-	distanceMatrix := make([][]float64, n)
+	distanceMatrix := make([][]float32, n)
 	for i := 0; i < n; i++ {
-		distanceMatrix[i] = make([]float64, n)
+		distanceMatrix[i] = make([]float32, n)
 		for j := 0; j < i; j++ {
 			distance := WardDistance(clusters[i], clusters[j])
 			distanceMatrix[i][j] = distance
@@ -75,13 +73,13 @@ func ComputeInitialDistanceMatrix(clusters []Cluster) [][]float64 {
 }
 
 // UpdateDistanceMatrix updates the distance matrix after merging clusters.
-func UpdateDistanceMatrix(distanceMatrix [][]float64, clusters []Cluster, newCluster Cluster, removedIdx1, removedIdx2 int) [][]float64 {
+func UpdateDistanceMatrix(distanceMatrix [][]float32, clusters []Cluster, newCluster Cluster, removedIdx1, removedIdx2 int) [][]float32 {
 	// Remove rows and columns corresponding to the removed clusters
 	distanceMatrix = RemoveRowsAndColumns(distanceMatrix, removedIdx1, removedIdx2)
 
 	// Add distances between new cluster and existing clusters
 	n := len(clusters)
-	newRow := make([]float64, n)
+	newRow := make([]float32, n)
 	for i := 0; i < n-1; i++ {
 		distance := WardDistance(clusters[i], newCluster)
 		newRow[i] = distance
@@ -99,7 +97,7 @@ func UpdateDistanceMatrix(distanceMatrix [][]float64, clusters []Cluster, newClu
 
 // RemoveRowsAndColumns removes rows and columns at indices i and j from the distance matrix.
 // It assumes that i < j.
-func RemoveRowsAndColumns(matrix [][]float64, i, j int) [][]float64 {
+func RemoveRowsAndColumns(matrix [][]float32, i, j int) [][]float32 {
 	if i > j {
 		i, j = j, i
 	}
@@ -118,8 +116,8 @@ func RemoveRowsAndColumns(matrix [][]float64, i, j int) [][]float64 {
 }
 
 // FindClosestClusters finds the two clusters with the minimum distance.
-func FindClosestClusters(distanceMatrix [][]float64) (int, int) {
-	minDistance := math.MaxFloat64
+func FindClosestClusters(distanceMatrix [][]float32) (int, int) {
+	minDistance := float32(math.MaxFloat32)
 	var idx1, idx2 int = -1, -1
 	n := len(distanceMatrix)
 	for i := 0; i < n; i++ {
@@ -135,15 +133,27 @@ func FindClosestClusters(distanceMatrix [][]float64) (int, int) {
 }
 
 // WardDistance calculates the Ward's linkage distance between two clusters.
-func WardDistance(a, b Cluster) float64 {
-	diff := make([]float64, len(a.Centroid))
+func WardDistance(a, b Cluster) float32 {
+	diff := make([]float32, len(a.Centroid))
 	for i := range diff {
 		diff[i] = a.Centroid[i] - b.Centroid[i]
 	}
-	distanceSquared := floats.Dot(diff, diff)
-	numerator := float64(a.Size * b.Size)
-	denominator := float64(a.Size + b.Size)
+	distanceSquared := DotFloat32(diff, diff)
+	numerator := float32(a.Size * b.Size)
+	denominator := float32(a.Size + b.Size)
 	return (numerator / denominator) * distanceSquared
+}
+
+// DotFloat32 computes the dot product of two float32 slices
+func DotFloat32(a, b []float32) float32 {
+	if len(a) != len(b) {
+		panic("DotFloat32: slices have different lengths")
+	}
+	var sum float32
+	for i := 0; i < len(a); i++ {
+		sum += a[i] * b[i]
+	}
+	return sum
 }
 
 // CalculateOptimalClusters calculates the optimal number of clusters based on desired cluster size constraints.
@@ -185,7 +195,7 @@ func CalculateOptimalClusters(totalItems, minSize, maxSize int) (int, error) {
 // Returns:
 // - A map where keys are cluster IDs (starting from 0) and values are slices of product reference IDs.
 // - A boolean indicating whether clustering was successful.
-func PerformClusteringWithConstraints(embeddings [][]float64, productReferenceIDs []string, minSize, maxSize int) (map[int][]string, bool) {
+func PerformClusteringWithConstraints(embeddings [][]float32, productReferenceIDs []string, minSize, maxSize int) (map[int][]string, bool) {
 	totalItems := len(embeddings)
 	log.Printf("Total items for clustering: %d", totalItems)
 
@@ -250,13 +260,13 @@ func PerformClusteringWithConstraints(embeddings [][]float64, productReferenceID
 
 // ComputeDistanceMatrix computes the distance matrix for the current set of clusters.
 // Deprecated: Use ComputeInitialDistanceMatrix instead.
-func ComputeDistanceMatrix(clusters []Cluster) [][]float64 {
+func ComputeDistanceMatrix(clusters []Cluster) [][]float32 {
 	return ComputeInitialDistanceMatrix(clusters)
 }
 
 // AddCluster adds a new cluster to the distance matrix.
 // Deprecated: Use UpdateDistanceMatrix instead.
-func AddCluster(distanceMatrix [][]float64, clusters []Cluster, newCluster Cluster) [][]float64 {
+func AddCluster(distanceMatrix [][]float32, clusters []Cluster, newCluster Cluster) [][]float32 {
 	// Not implemented as UpdateDistanceMatrix handles this.
 	return distanceMatrix
 }

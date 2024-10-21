@@ -1,3 +1,4 @@
+// main.go
 package main
 
 import (
@@ -45,7 +46,7 @@ func htmlFormHandler(w http.ResponseWriter, r *http.Request) {
 </head>
 <body>
 <h1 align="center">Clustering Service Demo</h1>
-<form id="dataForm" enctype="multipart/form-data">
+<form id="dataForm" enctype="multipart/form-data" method="post" action="/cluster_and_generate">
     <label for="authToken">Auth Token:</label>
     <input type="text" id="authToken" name="auth_token" required>
     <br><br>
@@ -62,27 +63,11 @@ func htmlFormHandler(w http.ResponseWriter, r *http.Request) {
     <input type="file" id="images" name="images" multiple>
     <br><br>
 
-    <button type="button" onclick="fetchData()">Cluster and Generate</button>
+    <button type="submit">Cluster and Generate</button>
 </form>
 
 <pre id="response"></pre>
 
-<script>
-    function fetchData() {
-        const form = document.getElementById('dataForm');
-        const formData = new FormData(form);
-
-        fetch('/cluster_and_generate', {
-            method: 'POST',
-            body: formData
-        })
-        .then(response => response.json())
-        .then(data => {
-            document.getElementById('response').textContent = JSON.stringify(data, null, 2);
-        })
-        .catch(error => console.error('Error:', error));
-    }
-</script>
 </body>
 </html>
 `
