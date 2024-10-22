@@ -42,7 +42,7 @@ func ClusterAndGenerateHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to create temporary directory.", http.StatusInternalServerError)
 		return
 	}
-	defer os.RemoveAll(tempDir) // Clean up after processing
+	// defer os.RemoveAll(tempDir) // Clean up after processing
 
 	log.Printf("Temporary directory created at: %s", tempDir)
 
