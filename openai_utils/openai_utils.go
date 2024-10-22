@@ -12,14 +12,13 @@ import (
 	"time"
 )
 
-// ClusterDetails represents the details of a single cluster.
-// Ensure this matches the definition in handlers.go
-type ClusterDetails struct {
-	Title               string
-	CatchyPhrase        string
-	Labels              string
-	Images              []string
-	ProductReferenceIDs []string
+// GPTResponse represents the structure of the response from OpenAI
+type GPTResponse struct {
+	Choices []struct {
+		Message struct {
+			Content string `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
 }
 
 // GenerateTitleAndCatchyPhrase generates a title and a catchy phrase using OpenAI's GPT model.
@@ -31,8 +30,9 @@ func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, s
 	}
 
 	for attempt := 0; attempt < retries; attempt++ {
+		// Construct the request body
 		requestBody := map[string]interface{}{
-			"model": "gpt-3.5-turbo", // or "gpt-4" if you have access
+			"model": "gpt-3.5-turbo", // Updated to "gpt-4" as per your requirement
 			"messages": []map[string]string{
 				{
 					"role": "system",
@@ -45,33 +45,50 @@ func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, s
 				},
 				{
 					"role":    "user",
-					"content": fmt.Sprintf("Labels: %s.", aggregatedText),
+					"content": fmt.Sprintf("Features: %s.", aggregatedText),
 				},
 			},
 		}
 
+		// Marshal the request body to JSON
 		requestData, err := json.Marshal(requestBody)
 		if err != nil {
 			log.Printf("Error marshaling OpenAI request body: %v", err)
 			continue
 		}
 
+		// Log the request being sent to GPT-4
+		log.Println("Sending request to OpenAI GPT-4:")
+		var prettyRequest bytes.Buffer
+		err = json.Indent(&prettyRequest, requestData, "", "  ")
+		if err != nil {
+			log.Printf("Error formatting request JSON: %v", err)
+			log.Println(string(requestData)) // Fallback to raw JSON
+		} else {
+			log.Println(prettyRequest.String())
+		}
+
+		// Create the HTTP POST request
 		req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewBuffer(requestData))
 		if err != nil {
 			log.Printf("Error creating OpenAI request: %v", err)
 			continue
 		}
 
+		// Set the necessary headers
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 		req.Header.Set("Content-Type", "application/json")
 
+		// Initialize the HTTP client with a timeout
 		client := &http.Client{
 			Timeout: 60 * time.Second, // Increased timeout for API response
 		}
+
+		// Send the request to OpenAI
 		resp, err := client.Do(req)
 		if err != nil {
 			log.Printf("Error performing OpenAI request: %v", err)
-			time.Sleep(2 * time.Second) // Exponential backoff can be implemented
+			time.Sleep(2 * time.Second) // Simple backoff strategy
 			continue
 		}
 
@@ -89,27 +106,28 @@ func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, s
 			continue
 		}
 
-		var response struct {
-			Choices []struct {
-				Message struct {
-					Content string `json:"content"`
-				} `json:"message"`
-			} `json:"choices"`
-		}
-		err = json.NewDecoder(resp.Body).Decode(&response)
+		// Read and decode the response
+		var gptResp GPTResponse
+		err = json.NewDecoder(resp.Body).Decode(&gptResp)
 		resp.Body.Close()
 		if err != nil {
 			log.Printf("Error decoding OpenAI response: %v", err)
 			continue
 		}
 
-		if len(response.Choices) == 0 {
+		// Check if any choices are returned
+		if len(gptResp.Choices) == 0 {
 			log.Println("No choices returned from OpenAI")
 			continue
 		}
 
-		assistantReply := response.Choices[0].Message.Content
+		assistantReply := gptResp.Choices[0].Message.Content
 
+		// Log the response received from GPT-4
+		log.Println("Received response from OpenAI GPT-4:")
+		log.Println(assistantReply)
+
+		// Attempt to unmarshal the JSON response
 		var result map[string]string
 		err = json.Unmarshal([]byte(assistantReply), &result)
 		if err != nil {
@@ -117,6 +135,7 @@ func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, s
 			continue
 		}
 
+		// Extract title and catchy_phrase from the response
 		title, okTitle := result["title"]
 		catchyPhrase, okPhrase := result["catchy_phrase"]
 		if !okTitle || !okPhrase {

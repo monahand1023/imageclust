@@ -17,6 +17,15 @@ type CombinedProductDetails struct {
 	UpdatedAt          string   `json:"updated_at,omitempty"`
 }
 
+// ClusterDetails represents the details of a single cluster.
+type ClusterDetails struct {
+	Title               string
+	CatchyPhrase        string
+	Labels              string
+	Images              []string
+	ProductReferenceIDs []string
+}
+
 // NewCombinedProductDetails creates a new CombinedProductDetails instance.
 func NewCombinedProductDetails(productReferenceID, advertiserID string, price float32, imagePath, description, title, updatedAt string) *CombinedProductDetails {
 	return &CombinedProductDetails{

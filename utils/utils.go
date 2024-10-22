@@ -2,23 +2,15 @@
 package utils
 
 import (
+	"ProductSetter/models"
 	"fmt"
 	"html/template"
 	"os"
 	"strings"
 )
 
-// ClusterDetails represents the details of a cluster.
-type ClusterDetails struct {
-	Title               string   `json:"title"`
-	CatchyPhrase        string   `json:"catchy_phrase"`
-	Labels              string   `json:"labels"`
-	Images              []string `json:"images"`
-	ProductReferenceIDs []string `json:"product_reference_ids"`
-}
-
 // GenerateHTMLOutput generates an HTML file representing the clusters.
-func GenerateHTMLOutput(clusterDetails map[string]ClusterDetails, tempDir, host string, port int) (string, error) {
+func GenerateHTMLOutput(clusterDetails map[string]models.ClusterDetails, tempDir, host string, port int) (string, error) {
 	htmlPath := fmt.Sprintf("%s/clusters.html", tempDir)
 
 	// Define a simple HTML template
@@ -69,7 +61,7 @@ func GenerateHTMLOutput(clusterDetails map[string]ClusterDetails, tempDir, host 
 
 	// Execute the template with cluster details
 	data := struct {
-		Clusters map[string]ClusterDetails
+		Clusters map[string]models.ClusterDetails
 		ImageDir string
 	}{
 		Clusters: clusterDetails,
@@ -101,4 +93,9 @@ func SanitizeFilename(name string) string {
 // urlEncode encodes a string for safe inclusion in URLs
 func URLEncode(s string) string {
 	return strings.ReplaceAll(s, " ", "%20")
+}
+
+// CleanText performs basic text cleaning, such as removing extra spaces and trimming.
+func CleanText(text string) string {
+	return strings.TrimSpace(text)
 }
