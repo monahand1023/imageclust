@@ -83,7 +83,7 @@ func NewProductSetter(profileID, authToken string, numberOfDaysLimit int, minClu
 }
 
 // Run executes the main workflow of the ProductSetter application
-func (ps *ProductSetter) Run() (map[int][]string, string, error) {
+func (ps *ProductSetter) Run() (map[string]models.ClusterDetails, string, error) {
 	startTime := time.Now()
 	log.Println("Starting ProductSetter run...")
 
@@ -142,10 +142,8 @@ func (ps *ProductSetter) Run() (map[int][]string, string, error) {
 
 	// Step 6: Generate the HTML output with GPT-enhanced descriptions
 	htmlOutputPath, err := utils.GenerateHTMLOutput(
-		clusterDetails,
+		clusterDetails, // Now passing the correct type
 		ps.TempDir,
-		"localhost", // Default Host, can be parameterized if needed
-		5003,        // Default Port, can be parameterized if needed
 	)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to generate HTML output: %v", err)
@@ -154,7 +152,7 @@ func (ps *ProductSetter) Run() (map[int][]string, string, error) {
 
 	// Log total execution time
 	log.Printf("Total execution time: %v", time.Since(startTime))
-	return clusters, htmlOutputPath, nil
+	return clusterDetails, htmlOutputPath, nil
 }
 
 // CreateEmbeddingsForAllProducts generates embeddings for all products concurrently

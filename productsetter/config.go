@@ -45,40 +45,8 @@ func ExtractConfigurations(r *http.Request) (*AppConfig, error) {
 		appCtx.NumberOfDaysLimit = numberOfDaysLimit
 	}
 
-	// Extract Host
-	host := r.FormValue("host")
-	if host == "" {
-		appCtx.Host = "localhost" // Default value
-	} else {
-		appCtx.Host = host
-	}
-
-	// Extract Port
-	portStr := r.FormValue("port")
-	port, err := strconv.Atoi(portStr)
-	if err != nil || port <= 0 {
-		appCtx.Port = 5003 // Default value
-	} else {
-		appCtx.Port = port
-	}
-
-	// Extract MinClusterSize
-	minClusterSizeStr := r.FormValue("min_cluster_size")
-	minClusterSize, err := strconv.Atoi(minClusterSizeStr)
-	if err != nil || minClusterSize <= 0 {
-		appCtx.MinClusterSize = 3 // Default value
-	} else {
-		appCtx.MinClusterSize = minClusterSize
-	}
-
-	// Extract MaxClusterSize
-	maxClusterSizeStr := r.FormValue("max_cluster_size")
-	maxClusterSize, err := strconv.Atoi(maxClusterSizeStr)
-	if err != nil || maxClusterSize <= 0 {
-		appCtx.MaxClusterSize = 6 // Default value
-	} else {
-		appCtx.MaxClusterSize = maxClusterSize
-	}
+	appCtx.MaxClusterSize = 6
+	appCtx.MinClusterSize = 3
 
 	return appCtx, nil
 }

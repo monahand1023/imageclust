@@ -9,135 +9,128 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
-// GenerateHTMLOutput generates an HTML file representing the clusters.
-func GenerateHTMLOutput(clusterDetails map[string]models.ClusterDetails, tempDir, host string, port int) (string, error) {
-	// Define the HTML template similar to your Python Jinja2 template
+// GenerateHTMLOutput generates an HTML file based on cluster details.
+func GenerateHTMLOutput(clusters map[string]models.ClusterDetails, tempDir string) (string, error) {
 	const tmpl = `
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8">
-        <title>Clustered Fashion Items</title>
-        <style>
-            body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f7f7f7; }
-            .container { max-width: 1200px; margin: 0 auto; }
-            .controls { margin-bottom: 20px; padding: 20px; background-color: #f0f0f0; border-radius: 8px; }
-            .control-table { width: 100%; border-collapse: collapse; }
-            .control-table th, .control-table td { padding: 10px; border-bottom: 1px solid #ddd; }
-            .control-table th { text-align: left; color: #34495e; font-size: 18px; }
-            .cluster { background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); margin-bottom: 40px; padding: 20px; }
-            .image-container { display: flex; flex-wrap: wrap; }
-            .image { margin: 10px; flex: 1 1 150px; }
-            img { max-width: 150px; height: auto; border-radius: 4px; border: 1px solid #ddd; }
-            h1 { color: #34495e; text-align: center; margin-bottom: 40px; }
-            h2 { color: #34495e; font-size: 20px; margin-bottom: 5px; }
-            h3 { color: #2c3e50; font-size: 16px; }
-            .catchy-phrase, .labels { margin-bottom: 10px; }
-            .labels { font-size: 14px; color: #7f8c8d; }
-            .submit-button { padding: 10px 20px; background-color: #2980b9; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
-            .submit-button:hover { background-color: #1c5980; }
-            .message { padding: 10px; margin-bottom: 20px; border-radius: 4px; }
-            .success { background-color: #d4edda; color: #155724; }
-            .error { background-color: #f8d7da; color: #721c24; }
-        </style>
-        <script>
-            async function submitWeights(event) {
-                event.preventDefault(); // Prevent the form from submitting the traditional way
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<title>Clustered Fashion Items</title>
+	<style>
+		.container {
+			width: 80%;
+			margin: auto;
+		}
+		.cluster {
+			border: 1px solid #ccc;
+			padding: 20px;
+			margin-bottom: 20px;
+		}
+		.image-container {
+			display: flex;
+			flex-wrap: wrap;
+		}
+		.image {
+			margin: 10px;
+		}
+		.image img {
+			max-width: 200px;
+			height: auto;
+		}
+		.submit-button {
+			background-color: #4CAF50;
+			color: white;
+			padding: 10px 20px;
+			border: none;
+			cursor: pointer;
+		}
+	</style>
+	<script>
+		async function publishCluster(clusterId, title, catchyPhrase, productReferenceIds) {
+			const payload = {
+				cluster_id: clusterId,
+				title: title,
+				description: catchyPhrase, // Using catchyPhrase instead of description
+				product_reference_ids: productReferenceIds
+			};
 
-                let formData = new FormData(event.target);
-                fetch("http://{{ .ServerAddress }}:{{ .ServerPort }}/update_weights", {
-                    method: "POST",
-                    body: formData
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        window.location.href = data.redirect_url;
-                    } else {
-                        alert("Error updating weights: " + data.error);
-                    }
-                })
-                .catch(error => console.error("Error:", error));
-            }
+			try {
+				const response = await fetch("/publish", {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json"
+					},
+					body: JSON.stringify(payload)
+				});
 
-            async function publishCluster(clusterId) {
-                const clusterData = { cluster_id: clusterId };
-            
-                try {
-                    const response = await fetch("http://{{ .ServerAddress }}:{{ .ServerPort }}/publish", {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json"
-                        },
-                        body: JSON.stringify(clusterData)
-                    });
-                    const data = await response.json();
-                    if (data.success) {
-                        alert("Cluster published successfully!");
-                    } else {
-                        alert("Failed to publish cluster: " + data.error);
-                    }
-                } catch (error) {
-                    console.error("Error:", error);
-                    alert("An error occurred.");
-                }
-            }
-        </script>
-    </head>
-    <body>
-        <div class="container">
-            <h1>Clustered Fashion Items</h1>
-            <!-- Clusters -->
-            {{range $cluster_id, $cluster_info := .SortedClusters}}
-                <div class="cluster">
-                    <h2>{{ $cluster_info.Title }}</h2>
-                    <h3>Cluster ID: {{ $cluster_id }}</h3>
-                    <p class="catchy-phrase"><strong>Catchy Phrase:</strong> {{ $cluster_info.CatchyPhrase }}</p>
-                    <p class="labels"><strong>Labels:</strong> {{ $cluster_info.Labels }}</p>
-                    <div class="image-container">
-                        {{range $index, $image := $cluster_info.Images}}
-                            <div class="image">
-                                <img src="file://{{ $.TempDir }}/images/{{ $image }}" alt="Image {{ $image }}">
-                                <p>Product Reference ID: {{ index $cluster_info.ProductReferenceIDs $index }}</p>
-                            </div>
-                        {{end}}
-                    </div>
-                    <!-- Publish Button -->
-                    <button onclick="publishCluster('{{ $cluster_id }}')" class="submit-button">
-                        Publish Cluster
-                    </button>
-                </div>
-            {{end}}
-        </div>
-    </body>
-    </html>
-    `
+				const data = await response.json();
+				if (data.success) {
+					alert("Cluster published successfully!");
+				} else {
+					alert("Failed to publish cluster: " + data.error);
+				}
+			} catch (error) {
+				console.error("Error:", error);
+				alert("An error occurred while publishing the cluster.");
+			}
+		}
+	</script>
+</head>
+<body>
+	<div class="container">
+		<h1>Clustered Fashion Items</h1>
+		<!-- Clusters -->
+		{{range $cluster_id, $cluster_info := .Clusters}}
+			<div class="cluster">
+				<h2>{{ $cluster_info.Title }}</h2>
+				<p><strong>Labels:</strong> {{ $cluster_info.Labels }}</p>
+				<p><strong>Catchy Phrase:</strong> {{ $cluster_info.CatchyPhrase }}</p>
+				<div class="image-container">
+					{{range $index, $image := $cluster_info.Images}}
+						<div class="image">
+							<img src="/image/{{ $image }}" alt="Image {{ $image }}">
+							<p>Product Reference ID: {{ index $cluster_info.ProductReferenceIDs $index }}</p>
+						</div>
+					{{end}}
+				</div>
+				<!-- Publish Button with Embedded Data -->
+				<button onclick="publishCluster('{{ $cluster_id }}', '{{ escapeJS $cluster_info.Title }}', '{{ escapeJS $cluster_info.CatchyPhrase }}', [{{ range $i, $id := $cluster_info.ProductReferenceIDs }} '{{ $id }}'{{ if ne (add $i 1) (len $cluster_info.ProductReferenceIDs) }}, {{ end }}{{ end }}])" class="submit-button">
+					Publish Cluster
+				</button>
+			</div>
+		{{end}}
+	</div>
+</body>
+</html>
+`
 
-	// Parse the template
-	t, err := template.New("clusters").Parse(tmpl)
+	// Define template functions
+	funcMap := template.FuncMap{
+		"escapeJS": escapeJS,
+		"add":      add,
+	}
+
+	// Parse the template with the custom functions
+	t, err := template.New("clusters").Funcs(funcMap).Parse(tmpl)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse HTML template: %v", err)
 	}
 
 	// Prepare data for the template
 	data := struct {
-		SortedClusters map[string]models.ClusterDetails
-		ServerAddress  string
-		ServerPort     int
-		TempDir        string // Added TempDir
+		Clusters map[string]models.ClusterDetails
 	}{
-		SortedClusters: sortClustersByID(clusterDetails),
-		ServerAddress:  host,
-		ServerPort:     port,
-		TempDir:        tempDir, // Pass tempDir to the template
+		Clusters: clusters,
 	}
 
 	// Log the data being sent to the template
 	log.Println("Preparing data for HTML template:")
-	for clusterID, cluster := range data.SortedClusters {
+	for clusterID, cluster := range data.Clusters {
 		log.Printf("Cluster ID: %s", clusterID)
 		log.Printf("  Title: %s", cluster.Title)
 		log.Printf("  Catchy Phrase: %s", cluster.CatchyPhrase)
@@ -163,33 +156,46 @@ func GenerateHTMLOutput(clusterDetails map[string]models.ClusterDetails, tempDir
 	}
 
 	// Log the location of the generated HTML file
-	log.Printf("HTML file generated successfully at: file://%s\n", outputFile)
+	log.Printf("HTML file generated successfully at: %s", outputFile)
 
+	// Return the path to the HTML file
 	return outputFile, nil
+}
+
+// Helper functions
+
+// escapeJS escapes single quotes and backslashes for safe inclusion in JavaScript strings
+func escapeJS(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "'", "\\'")
+	return s
+}
+
+// add is a helper function to add two integers
+func add(a, b int) int {
+	return a + b
 }
 
 // sortClustersByID sorts the clusters based on their integer IDs
 func sortClustersByID(clusters map[string]models.ClusterDetails) map[string]models.ClusterDetails {
 	sorted := make(map[string]models.ClusterDetails)
 
-	// Collect and sort the cluster IDs numerically
+	// Collect cluster IDs
 	clusterIDs := make([]int, 0, len(clusters))
 	idMap := make(map[int]string)
 	for key := range clusters {
 		var id int
-		fmt.Sscanf(key, "Cluster-%d", &id)
+		_, err := fmt.Sscanf(key, "Cluster-%d", &id)
+		if err != nil {
+			log.Printf("Failed to parse cluster ID '%s': %v", key, err)
+			continue // Skip clusters with invalid IDs
+		}
 		clusterIDs = append(clusterIDs, id)
 		idMap[id] = key
 	}
 
-	// Sort the cluster IDs
-	for i := 0; i < len(clusterIDs)-1; i++ {
-		for j := i + 1; j < len(clusterIDs); j++ {
-			if clusterIDs[i] > clusterIDs[j] {
-				clusterIDs[i], clusterIDs[j] = clusterIDs[j], clusterIDs[i]
-			}
-		}
-	}
+	// Sort cluster IDs using sort.Ints for efficiency
+	sort.Ints(clusterIDs)
 
 	// Populate the sorted map
 	for _, id := range clusterIDs {
@@ -200,7 +206,7 @@ func sortClustersByID(clusters map[string]models.ClusterDetails) map[string]mode
 	return sorted
 }
 
-// sanitizeFilename replaces invalid characters in filenames
+// SanitizeFilename replaces invalid characters in filenames
 func SanitizeFilename(name string) string {
 	// Replace any character that is not a letter, number, dot, or dash with an underscore
 	return strings.Map(func(r rune) rune {

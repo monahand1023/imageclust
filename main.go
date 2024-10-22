@@ -1,27 +1,42 @@
-// main.go
 package main
 
 import (
 	"log"
 	"net/http"
+	"path/filepath"
+	"sync"
 
 	"ProductSetter/handlers"
-
 	"github.com/gorilla/mux"
-	"html/template"
+)
+
+var (
+	currentTempDir string
+	tempDirMutex   sync.RWMutex
 )
 
 func main() {
 	// Initialize the router using Gorilla Mux
 	router := mux.NewRouter()
 
+	// Apply the CORS middleware
+	router.Use(handlers.EnableCORS)
+
+	// Initialize the handler
+	h := handlers.NewHandler()
+
 	// Register handlers for various routes
-	router.HandleFunc("/cluster_and_generate", handlers.ClusterAndGenerateHandler).Methods("POST")
-	//	router.HandleFunc("/publish", handlers.PublishHandler).Methods("POST")
+	router.HandleFunc("/cluster_and_generate", h.ClusterAndGenerateHandler).Methods("POST")
+	router.HandleFunc("/publish", h.PublishHandler).Methods("POST")
 	router.HandleFunc("/", htmlFormHandler).Methods("GET") // Serve the HTML form on the root path
+	router.HandleFunc("/view", h.ViewHandler).Methods("GET")
+	router.HandleFunc("/image/{imageName}", h.ImageHandler).Methods("GET")
+
+	// Serve images from the current temporary directory
+	router.PathPrefix("/images/").Handler(http.HandlerFunc(serveImages))
 
 	// Define the server address and port
-	serverAddress := ":8080" // You can change the port as needed
+	serverAddress := ":8080"
 
 	// Log the server start
 	log.Printf("Starting server on %s", serverAddress)
@@ -33,21 +48,35 @@ func main() {
 	}
 }
 
-// Handler to serve the HTML form
+// serveImages dynamically serves images from the current temp directory.
+func serveImages(w http.ResponseWriter, r *http.Request) {
+	tempDirMutex.RLock()
+	defer tempDirMutex.RUnlock()
+
+	if currentTempDir == "" {
+		http.Error(w, "No image directory available", http.StatusNotFound)
+		return
+	}
+
+	imagePath := r.URL.Path[len("/images/"):]
+	fullPath := filepath.Join(currentTempDir, "images", imagePath)
+	http.ServeFile(w, r, fullPath)
+}
+
+// htmlFormHandler serves the HTML form on the root path.
 func htmlFormHandler(w http.ResponseWriter, r *http.Request) {
-	// Template for the HTML form
-	formTemplate := `
-<!-- main.go (assuming it serves the HTML form) -->
+	form := `
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+    <meta charset="UTF-8">
     <title>Product Clustering</title>
 </head>
 <body>
     <h1>Cluster Products</h1>
     <form action="/cluster_and_generate" method="post" enctype="multipart/form-data">
         <label for="profile_id">Profile ID:</label><br>
-        <input type="text" id="profile_id" name="profile_id" required value="b5815d12-50e5-11ee-8376-940c556626de"><br><br>
+        <input type="text" id="profile_id" name="profile_id" required><br><br>
 
         <label for="auth_token">Auth Token:</label><br>
         <input type="text" id="auth_token" name="auth_token" required><br><br>
@@ -59,14 +88,7 @@ func htmlFormHandler(w http.ResponseWriter, r *http.Request) {
     </form>
 </body>
 </html>
-`
-
-	// Parse and execute the template
-	tmpl := template.New("form")
-	tmpl, err := tmpl.Parse(formTemplate)
-	if err != nil {
-		http.Error(w, "Unable to load form", http.StatusInternalServerError)
-		return
-	}
-	tmpl.Execute(w, nil)
+	`
+	w.Header().Set("Content-Type", "text/html")
+	w.Write([]byte(form))
 }
