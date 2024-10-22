@@ -75,7 +75,7 @@ func ExtractConfigurations(r *http.Request) (*AppConfig, error) {
 	maxClusterSizeStr := r.FormValue("max_cluster_size")
 	maxClusterSize, err := strconv.Atoi(maxClusterSizeStr)
 	if err != nil || maxClusterSize <= 0 {
-		appCtx.MaxClusterSize = 10 // Default value
+		appCtx.MaxClusterSize = 6 // Default value
 	} else {
 		appCtx.MaxClusterSize = maxClusterSize
 	}
