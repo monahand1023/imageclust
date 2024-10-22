@@ -32,7 +32,7 @@ func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, s
 	for attempt := 0; attempt < retries; attempt++ {
 		// Construct the request body
 		requestBody := map[string]interface{}{
-			"model": "gpt-3.5-turbo", // Updated to "gpt-4" as per your requirement
+			"model": "gpt-4", // Updated to "gpt-4" as per your requirement
 			"messages": []map[string]string{
 				{
 					"role": "system",
