@@ -58,7 +58,7 @@ func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, s
 		}
 
 		// Log the request being sent to GPT-4
-		log.Println("Sending request to OpenAI GPT-4:")
+		log.Println("Sending request to OpenAI GPT:")
 		var prettyRequest bytes.Buffer
 		err = json.Indent(&prettyRequest, requestData, "", "  ")
 		if err != nil {
@@ -124,7 +124,7 @@ func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, s
 		assistantReply := gptResp.Choices[0].Message.Content
 
 		// Log the response received from GPT-4
-		log.Println("Received response from OpenAI GPT-4:")
+		log.Println("Received response from OpenAI GPT:")
 		log.Println(assistantReply)
 
 		// Attempt to unmarshal the JSON response
