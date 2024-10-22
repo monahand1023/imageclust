@@ -1,4 +1,4 @@
-// clustering/clustering.go
+// Package clustering/clustering.go
 package clustering
 
 import (
@@ -118,7 +118,7 @@ func RemoveRowsAndColumns(matrix [][]float32, i, j int) [][]float32 {
 // FindClosestClusters finds the two clusters with the minimum distance.
 func FindClosestClusters(distanceMatrix [][]float32) (int, int) {
 	minDistance := float32(math.MaxFloat32)
-	var idx1, idx2 int = -1, -1
+	var idx1, idx2 = -1, -1
 	n := len(distanceMatrix)
 	for i := 0; i < n; i++ {
 		for j := 0; j < i; j++ {
@@ -346,17 +346,4 @@ func splitCluster(cluster Cluster, embeddings [][]float32, maxSize int) ([]Clust
 	}
 
 	return subClusters, true
-}
-
-// ComputeDistanceMatrix computes the distance matrix for the current set of clusters.
-// Deprecated: Use ComputeInitialDistanceMatrix instead.
-func ComputeDistanceMatrix(clusters []Cluster) [][]float32 {
-	return ComputeInitialDistanceMatrix(clusters)
-}
-
-// AddCluster adds a new cluster to the distance matrix.
-// Deprecated: Use UpdateDistanceMatrix instead.
-func AddCluster(distanceMatrix [][]float32, clusters []Cluster, newCluster Cluster) [][]float32 {
-	// Not implemented as UpdateDistanceMatrix handles this.
-	return distanceMatrix
 }

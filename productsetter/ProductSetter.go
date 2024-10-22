@@ -1,4 +1,4 @@
-// ProductSetter/productsetter/ProductSetter.go
+// Package productsetter
 package productsetter
 
 import (
@@ -235,7 +235,12 @@ func (ps *ProductSetter) FetchProductDetails() ([]models.CombinedProductDetails,
 		if err != nil {
 			return nil, fmt.Errorf("failed to send activities request: %v", err)
 		}
-		defer resp.Body.Close()
+		defer func(Body io.ReadCloser) {
+			err := Body.Close()
+			if err != nil {
+
+			}
+		}(resp.Body)
 
 		// Check for successful response
 		if resp.StatusCode != http.StatusOK {
@@ -327,8 +332,8 @@ func (ps *ProductSetter) PrepareClusterDetails(clusters map[int][]string, produc
 	for clusterKey, details := range clusterDetails {
 		// Aggregate Labels
 		labelsSet := make(map[string]struct{})
-		titles := []string{}
-		descriptions := []string{}
+		var titles []string
+		var descriptions []string
 		for _, pid := range details.ProductReferenceIDs {
 			product := models.ProductDetailsMap(pid, productDetails)
 			if product != nil {

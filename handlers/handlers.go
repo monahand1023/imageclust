@@ -1,4 +1,4 @@
-// handlers/handlers.go
+// Package handlers/handlers.go
 package handlers
 
 import (
@@ -187,7 +187,12 @@ func (h *Handler) PublishHandler(w http.ResponseWriter, r *http.Request) {
 		respondWithError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	defer r.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+
+		}
+	}(r.Body)
 
 	err = json.Unmarshal(body, &req)
 	if err != nil {
@@ -262,7 +267,12 @@ curl -X POST "%s" \
 		respondWithError(w, http.StatusInternalServerError, "Failed to perform request to external API")
 		return
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+
+		}
+	}(resp.Body)
 
 	// Read the response body
 	respBody, err := io.ReadAll(resp.Body)

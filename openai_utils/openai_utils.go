@@ -1,4 +1,4 @@
-// openai_utils/openai_utils.go
+// Package openai_utils/openai_utils.go
 package openai_utils
 
 import (
@@ -95,13 +95,19 @@ func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, s
 		// Handle rate limiting or server errors
 		if resp.StatusCode == http.StatusTooManyRequests {
 			log.Printf("OpenAI rate limit exceeded. Attempt %d/%d", attempt+1, retries)
-			resp.Body.Close()
+			err := resp.Body.Close()
+			if err != nil {
+				return "", ""
+			}
 			time.Sleep(2 * time.Second)
 			continue
 		} else if resp.StatusCode != http.StatusOK {
 			bodyBytes, _ := io.ReadAll(resp.Body)
 			log.Printf("OpenAI API error. Status: %d, Response: %s", resp.StatusCode, string(bodyBytes))
-			resp.Body.Close()
+			err := resp.Body.Close()
+			if err != nil {
+				return "", ""
+			}
 			time.Sleep(2 * time.Second)
 			continue
 		}

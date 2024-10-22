@@ -1,4 +1,4 @@
-// utils/utils.go
+// Package utils
 package utils
 
 import (
@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
@@ -174,36 +173,6 @@ func escapeJS(s string) string {
 // add is a helper function to add two integers
 func add(a, b int) int {
 	return a + b
-}
-
-// sortClustersByID sorts the clusters based on their integer IDs
-func sortClustersByID(clusters map[string]models.ClusterDetails) map[string]models.ClusterDetails {
-	sorted := make(map[string]models.ClusterDetails)
-
-	// Collect cluster IDs
-	clusterIDs := make([]int, 0, len(clusters))
-	idMap := make(map[int]string)
-	for key := range clusters {
-		var id int
-		_, err := fmt.Sscanf(key, "Cluster-%d", &id)
-		if err != nil {
-			log.Printf("Failed to parse cluster ID '%s': %v", key, err)
-			continue // Skip clusters with invalid IDs
-		}
-		clusterIDs = append(clusterIDs, id)
-		idMap[id] = key
-	}
-
-	// Sort cluster IDs using sort.Ints for efficiency
-	sort.Ints(clusterIDs)
-
-	// Populate the sorted map
-	for _, id := range clusterIDs {
-		key := idMap[id]
-		sorted[key] = clusters[key]
-	}
-
-	return sorted
 }
 
 // SanitizeFilename replaces invalid characters in filenames

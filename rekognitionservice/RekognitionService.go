@@ -1,4 +1,4 @@
-// RekognitionService.go
+// Package rekognitionservice
 package rekognitionservice
 
 import (

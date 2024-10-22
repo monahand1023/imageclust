@@ -64,7 +64,7 @@ func serveImages(w http.ResponseWriter, r *http.Request) {
 }
 
 // htmlFormHandler serves the HTML form on the root path.
-func htmlFormHandler(w http.ResponseWriter, r *http.Request) {
+func htmlFormHandler(w http.ResponseWriter, _ *http.Request) {
 	form := `
 <!DOCTYPE html>
 <html lang="en">
@@ -76,7 +76,7 @@ func htmlFormHandler(w http.ResponseWriter, r *http.Request) {
     <h1>Cluster Products</h1>
     <form action="/cluster_and_generate" method="post" enctype="multipart/form-data">
         <label for="profile_id">Profile ID:</label><br>
-        <input type="text" id="profile_id" name="profile_id" required><br><br>
+        <input type="text" id="profile_id" name="profile_id" value="b5815d12-50e5-11ee-8376-940c556626de" required><br><br>
 
         <label for="auth_token">Auth Token:</label><br>
         <input type="text" id="auth_token" name="auth_token" required><br><br>

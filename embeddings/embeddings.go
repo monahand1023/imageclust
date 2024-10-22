@@ -1,14 +1,11 @@
-// embeddings/embeddings.go
+// Package embeddings/embeddings.go
 package embeddings
 
 import (
-	"ProductSetter/models"
 	"ProductSetter/rekognitionservice"
-	"encoding/json"
 	"fmt"
 	"image"
 	"log"
-	"os"
 	"path/filepath"
 	"sync"
 
@@ -35,7 +32,10 @@ func LoadPretrainedModelONNX(modelPath string) (gocv.Net, error) {
 	}
 
 	// Set preferable backend and target to CPU
-	net.SetPreferableBackend(gocv.NetBackendDefault)
+	err := net.SetPreferableBackend(gocv.NetBackendDefault)
+	if err != nil {
+		return gocv.Net{}, err
+	}
 	net.SetPreferableTarget(gocv.NetTargetCPU)
 
 	return net, nil
@@ -48,35 +48,53 @@ func PreprocessImage(imagePath string) (gocv.Mat, error) {
 	// Load the image using GoCV
 	img := gocv.IMRead(imagePath, gocv.IMReadColor)
 	if img.Empty() {
-		return gocv.NewMat(), fmt.Errorf("failed to read image: %s. The image file might be corrupt or unreadable.", imagePath)
+		return gocv.NewMat(), fmt.Errorf("failed to read image: %s. The image file might be corrupt or unreadable", imagePath)
 	}
-	defer img.Close()
+	defer func(img *gocv.Mat) {
+		err := img.Close()
+		if err != nil {
+		}
+	}(&img)
 
 	// Resize to 224x224 (standard for ResNet50)
 	resized := gocv.NewMat()
-	defer resized.Close()
+	defer func(resized *gocv.Mat) {
+		err := resized.Close()
+		if err != nil {
+
+		}
+	}(&resized)
 
 	gocv.Resize(img, &resized, image.Pt(224, 224), 0, 0, gocv.InterpolationLinear)
 	if resized.Empty() {
-		return gocv.NewMat(), fmt.Errorf("failed to resize image: %s. There might be an issue with the image content.", imagePath)
+		return gocv.NewMat(), fmt.Errorf("failed to resize image: %s. There might be an issue with the image content", imagePath)
 	}
 
 	// Convert image to RGB
 	rgb := gocv.NewMat()
-	defer rgb.Close()
+	defer func(rgb *gocv.Mat) {
+		err := rgb.Close()
+		if err != nil {
+		}
+	}(&rgb)
 
 	gocv.CvtColor(resized, &rgb, gocv.ColorBGRToRGB)
 	if rgb.Empty() {
-		return gocv.NewMat(), fmt.Errorf("failed to convert image to RGB: %s. Image data might be invalid.", imagePath)
+		return gocv.NewMat(), fmt.Errorf("failed to convert image to RGB: %s. Image data might be invalid", imagePath)
 	}
 
 	// Create a blob from the image
 	blob := gocv.NewMat()
-	defer blob.Close()
+	defer func(blob *gocv.Mat) {
+		err := blob.Close()
+		if err != nil {
+
+		}
+	}(&blob)
 
 	blob = gocv.BlobFromImage(rgb, 1.0/255.0, image.Pt(224, 224), gocv.NewScalar(0, 0, 0, 0), false, false)
 	if blob.Empty() {
-		return gocv.NewMat(), fmt.Errorf("failed to create blob from image: %s. Blob generation failed.", imagePath)
+		return gocv.NewMat(), fmt.Errorf("failed to create blob from image: %s. Blob generation failed", imagePath)
 	}
 
 	// Check the shape of the blob
@@ -89,7 +107,7 @@ func PreprocessImage(imagePath string) (gocv.Mat, error) {
 	finalBlob := blob.Clone()
 
 	if finalBlob.Empty() {
-		return gocv.NewMat(), fmt.Errorf("final blob is empty after processing image: %s. This might indicate a deeper issue with image preprocessing.", imagePath)
+		return gocv.NewMat(), fmt.Errorf("final blob is empty after processing image: %s. This might indicate a deeper issue with image preprocessing", imagePath)
 	}
 
 	log.Printf("Successfully preprocessed image: %s", imagePath)
@@ -103,7 +121,12 @@ func GetImageEmbedding(appCtx *AppContext, imagePath string) ([]float32, error) 
 	if err != nil {
 		return nil, err
 	}
-	defer blob.Close()
+	defer func(blob *gocv.Mat) {
+		err := blob.Close()
+		if err != nil {
+
+		}
+	}(&blob)
 
 	// Lock the Net object
 	appCtx.NetMutex.Lock()
@@ -118,7 +141,11 @@ func GetImageEmbedding(appCtx *AppContext, imagePath string) ([]float32, error) 
 	if embeddingMat.Empty() {
 		return nil, fmt.Errorf("failed to generate embedding for image: %s", imagePath)
 	}
-	defer embeddingMat.Close()
+	defer func(embeddingMat *gocv.Mat) {
+		err := embeddingMat.Close()
+		if err != nil {
+		}
+	}(&embeddingMat)
 
 	// Extract the data as a float32 slice
 	embedding, err := embeddingMat.DataPtrFloat32()
@@ -135,58 +162,6 @@ func GetImageEmbedding(appCtx *AppContext, imagePath string) ([]float32, error) 
 }
 
 // CreateProductEmbedding generates an embedding for a product using ResNet50 and Rekognition labels
-func CreateProductEmbedding(productRefID string, appCtx *AppContext, rekognitionSvc *rekognitionservice.RekognitionService) ([]float32, error) {
-	log.Printf("Creating product embedding for: %s", productRefID)
-
-	// Check if the combined embedding is already cached
-	combinedEmbedding, found, err := CheckCache(productRefID, appCtx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check cache: %v", err)
-	}
-	if found {
-		log.Printf("Using cached combined embedding for product: %s", productRefID)
-		return combinedEmbedding, nil
-	}
-
-	// Get the image path
-	imagePath := filepath.Join(appCtx.ImageDir, productRefID+".jpg")
-
-	// 1. Generate an image embedding using the pre-trained ResNet50 model
-	imageEmbedding, err := GetImageEmbedding(appCtx, imagePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate image embedding for product %s: %v", productRefID, err)
-	}
-
-	// 2. Detect labels using Rekognition (cached)
-	labels, err := rekognitionSvc.DetectLabels(imagePath, 10, 80)
-	if err != nil {
-		return nil, fmt.Errorf("failed to detect labels for product %s: %v", productRefID, err)
-	}
-
-	// Store labels in LabelsMapping
-	appCtx.Mutex.Lock()
-	labelNames := []string{}
-	for _, label := range labels {
-		labelNames = append(labelNames, *label.Name)
-	}
-	appCtx.LabelsMapping[productRefID] = labelNames
-	appCtx.Mutex.Unlock()
-
-	// 3. Convert detected labels to a vector (e.g., one-hot encoding)
-	labelVector := GenerateLabelVector(labelNames, appCtx.LabelSet)
-
-	// 4. Combine the image embedding and label vector
-	combinedEmbedding = CombineEmbeddings(imageEmbedding, labelVector)
-
-	// 5. Cache the combined embedding
-	err = StoreInCache(productRefID, combinedEmbedding, appCtx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to store embedding in cache: %v", err)
-	}
-
-	log.Printf("Successfully created and cached embedding for product: %s", productRefID)
-	return combinedEmbedding, nil
-}
 
 // GenerateLabelVector converts labels into a one-hot encoded vector based on the full label set
 func GenerateLabelVector(labels []string, labelSet map[string]int) []float32 {
@@ -206,49 +181,6 @@ func CombineEmbeddings(embedding []float32, labelVector []float32) []float32 {
 	copy(combined, embedding)
 	copy(combined[len(embedding):], labelVector)
 	return combined
-}
-
-// CheckCache retrieves a combined embedding from the cache if it exists
-func CheckCache(productRefID string, appCtx *AppContext) ([]float32, bool, error) {
-	cacheFilePath := filepath.Join(appCtx.CacheDir, productRefID+"_embedding.json")
-
-	// Check if cache file exists
-	if _, err := os.Stat(cacheFilePath); os.IsNotExist(err) {
-		// Cache does not exist
-		return nil, false, nil
-	}
-
-	// Read cached embedding
-	cacheData, err := os.ReadFile(cacheFilePath)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to read cache file: %v", err)
-	}
-
-	// Parse cached embedding
-	var embedding []float32
-	if err := json.Unmarshal(cacheData, &embedding); err != nil {
-		return nil, false, fmt.Errorf("failed to parse cache file: %v", err)
-	}
-
-	return embedding, true, nil
-}
-
-// StoreInCache saves a combined embedding to the cache
-func StoreInCache(productRefID string, embedding []float32, appCtx *AppContext) error {
-	cacheFilePath := filepath.Join(appCtx.CacheDir, productRefID+"_embedding.json")
-
-	// Convert embedding to JSON
-	cacheData, err := json.Marshal(embedding)
-	if err != nil {
-		return fmt.Errorf("failed to marshal embedding to JSON: %v", err)
-	}
-
-	// Write to cache file
-	if err := os.WriteFile(cacheFilePath, cacheData, 0644); err != nil {
-		return fmt.Errorf("failed to write cache file: %v", err)
-	}
-
-	return nil
 }
 
 // BuildLabelSet constructs a set of all possible labels from the dataset
@@ -280,14 +212,4 @@ func BuildLabelSet(productRefIDs []string, rekognitionSvc *rekognitionservice.Re
 	appCtx.LabelSet = labelSet
 	log.Printf("Label set built with %d unique labels", len(labelSet))
 	return nil
-}
-
-// ProductDetailsMap retrieves a product's details by its reference ID.
-func ProductDetailsMap(pid string, productDetails []models.CombinedProductDetails) models.CombinedProductDetails {
-	for _, product := range productDetails {
-		if product.ProductReferenceID == pid {
-			return product
-		}
-	}
-	return models.CombinedProductDetails{}
 }
