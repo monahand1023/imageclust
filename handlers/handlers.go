@@ -302,7 +302,7 @@ func (h *Handler) ViewHandler(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, htmlFilePath)
 }
 
-// ImageHandler serves images directly from tempDir without a separate images directory
+// ImageHandler serves images directly from tempDir/images/
 func (h *Handler) ImageHandler(w http.ResponseWriter, r *http.Request) {
 	tempDir := GetTempDir()
 	if tempDir == "" {
@@ -311,7 +311,18 @@ func (h *Handler) ImageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	vars := mux.Vars(r)
 	imageName := vars["imageName"]
-	imagePath := filepath.Join(tempDir, imageName)
+
+	// Construct the path to the images subdirectory
+	imagesDir := filepath.Join(tempDir, "images")
+	imagePath := filepath.Join(imagesDir, imageName)
+
+	// Check if the image exists
+	if _, err := os.Stat(imagePath); os.IsNotExist(err) {
+		http.Error(w, "Image not found", http.StatusNotFound)
+		return
+	}
+
+	// Serve the image file
 	http.ServeFile(w, r, imagePath)
 }
 
