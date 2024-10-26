@@ -1,4 +1,4 @@
-// Package openai_utils/openai_utils.go
+// Package openai_utils provides utilities to interact with OpenAI's API.
 package openai_utils
 
 import (
@@ -21,8 +21,16 @@ type GPTResponse struct {
 	} `json:"choices"`
 }
 
+// OpenAIClient implements the AIClient interface using OpenAI's GPT.
+type OpenAIClient struct{}
+
+// NewOpenAIClient returns a new instance of OpenAIClient.
+func NewOpenAIClient() *OpenAIClient {
+	return &OpenAIClient{}
+}
+
 // GenerateTitleAndCatchyPhrase generates a title and a catchy phrase using OpenAI's GPT model.
-func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, string) {
+func (o *OpenAIClient) GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, string) {
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
 		log.Println("OPENAI_API_KEY is not set")
@@ -155,4 +163,10 @@ func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, s
 	// If all retries fail, return default values
 	log.Println("Failed to generate title and catchy phrase after retries")
 	return "No Title", "No phrase available"
+}
+
+// GenerateTitleAndCatchyPhrase is a package-level function that creates a new OpenAIClient and calls its method.
+func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, string) {
+	client := NewOpenAIClient()
+	return client.GenerateTitleAndCatchyPhrase(aggregatedText, retries)
 }

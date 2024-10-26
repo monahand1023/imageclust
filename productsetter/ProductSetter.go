@@ -2,7 +2,7 @@
 package productsetter
 
 import (
-	"ProductSetter/openai_utils"
+	"ProductSetter/ai_wrapper"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -363,8 +363,11 @@ func (ps *ProductSetter) PrepareClusterDetails(clusters map[int][]string, produc
 		// Combine aggregated features for GPT
 		aggregatedFeatures := fmt.Sprintf("Labels: %s. Titles: %s. Descriptions: %s.", aggregatedLabels, aggregatedTitles, aggregatedDescriptions)
 
-		// Generate title and catchy phrase using GPT
-		title, catchyPhrase := openai_utils.GenerateTitleAndCatchyPhrase(aggregatedFeatures, 3)
+		// Define the AI service flag (0 for OpenAI, 1 for Bedrock)
+		aiServiceFlag := ai_wrapper.BedrockService // Change this value to switch between services
+
+		// Generate title and catchy phrase using the selected AI service
+		title, catchyPhrase := ai_wrapper.GenerateTitleAndCatchyPhrase(aggregatedFeatures, 3, aiServiceFlag)
 
 		// Assign GPT-generated title and catchy phrase
 		details.Title = title
