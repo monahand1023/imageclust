@@ -363,8 +363,7 @@ func (ps *ProductSetter) PrepareClusterDetails(clusters map[int][]string, produc
 		// Combine aggregated features for GPT
 		aggregatedFeatures := fmt.Sprintf("Labels: %s. Titles: %s. Descriptions: %s.", aggregatedLabels, aggregatedTitles, aggregatedDescriptions)
 
-		// Define the AI service flag (0 for OpenAI, 1 for Bedrock)
-		aiServiceFlag := ai_wrapper.BedrockService // Change this value to switch between services
+		aiServiceFlag := ai_wrapper.ClaudeService // Change this value to switch between services
 
 		// Generate title and catchy phrase using the selected AI service
 		title, catchyPhrase := ai_wrapper.GenerateTitleAndCatchyPhrase(aggregatedFeatures, 3, aiServiceFlag)
