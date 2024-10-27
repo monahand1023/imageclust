@@ -1,4 +1,3 @@
-// Package openai_utils provides utilities to interact with OpenAI's API.
 package openai_utils
 
 import (
@@ -12,6 +11,24 @@ import (
 	"time"
 )
 
+// OpenAIModel represents a specific OpenAI model configuration
+type OpenAIModel struct {
+	ModelName   string
+	ServiceName string
+}
+
+// Available OpenAI models
+var (
+	GPT4 = OpenAIModel{
+		ModelName:   "gpt-4",
+		ServiceName: "GPT-4",
+	}
+	GPT35Turbo = OpenAIModel{
+		ModelName:   "gpt-3.5-turbo",
+		ServiceName: "GPT-3.5 Turbo",
+	}
+)
+
 // GPTResponse represents the structure of the response from OpenAI
 type GPTResponse struct {
 	Choices []struct {
@@ -21,15 +38,19 @@ type GPTResponse struct {
 	} `json:"choices"`
 }
 
-// OpenAIClient implements the AIClient interface using OpenAI's GPT.
-type OpenAIClient struct{}
-
-// NewOpenAIClient returns a new instance of OpenAIClient.
-func NewOpenAIClient() *OpenAIClient {
-	return &OpenAIClient{}
+// OpenAIClient implements the AIClient interface using OpenAI's GPT
+type OpenAIClient struct {
+	Model OpenAIModel
 }
 
-// GenerateTitleAndCatchyPhrase generates a title and a catchy phrase using OpenAI's GPT model.
+// NewOpenAIClient returns a new instance of OpenAIClient
+func NewOpenAIClient(model OpenAIModel) *OpenAIClient {
+	return &OpenAIClient{
+		Model: model,
+	}
+}
+
+// GenerateTitleAndCatchyPhrase generates a title and a catchy phrase using OpenAI's GPT model
 func (o *OpenAIClient) GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, string) {
 	apiKey := os.Getenv("OPENAI_API_KEY")
 	if apiKey == "" {
@@ -40,7 +61,7 @@ func (o *OpenAIClient) GenerateTitleAndCatchyPhrase(aggregatedText string, retri
 	for attempt := 0; attempt < retries; attempt++ {
 		// Construct the request body
 		requestBody := map[string]interface{}{
-			"model": "gpt-4", // Updated to "gpt-4" as per your requirement
+			"model": o.Model.ModelName,
 			"messages": []map[string]string{
 				{
 					"role": "system",
@@ -65,8 +86,8 @@ func (o *OpenAIClient) GenerateTitleAndCatchyPhrase(aggregatedText string, retri
 			continue
 		}
 
-		// Log the request being sent to GPT-4
-		log.Println("Sending request to OpenAI GPT:")
+		// Log the request being sent to GPT
+		log.Printf("Sending request to OpenAI (%s):", o.Model.ServiceName)
 		var prettyRequest bytes.Buffer
 		err = json.Indent(&prettyRequest, requestData, "", "  ")
 		if err != nil {
@@ -103,19 +124,13 @@ func (o *OpenAIClient) GenerateTitleAndCatchyPhrase(aggregatedText string, retri
 		// Handle rate limiting or server errors
 		if resp.StatusCode == http.StatusTooManyRequests {
 			log.Printf("OpenAI rate limit exceeded. Attempt %d/%d", attempt+1, retries)
-			err := resp.Body.Close()
-			if err != nil {
-				return "", ""
-			}
+			resp.Body.Close()
 			time.Sleep(2 * time.Second)
 			continue
 		} else if resp.StatusCode != http.StatusOK {
 			bodyBytes, _ := io.ReadAll(resp.Body)
 			log.Printf("OpenAI API error. Status: %d, Response: %s", resp.StatusCode, string(bodyBytes))
-			err := resp.Body.Close()
-			if err != nil {
-				return "", ""
-			}
+			resp.Body.Close()
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -137,8 +152,8 @@ func (o *OpenAIClient) GenerateTitleAndCatchyPhrase(aggregatedText string, retri
 
 		assistantReply := gptResp.Choices[0].Message.Content
 
-		// Log the response received from GPT-4
-		log.Println("Received response from OpenAI GPT:")
+		// Log the response received from GPT
+		log.Printf("Received response from OpenAI (%s):", o.Model.ServiceName)
 		log.Println(assistantReply)
 
 		// Attempt to unmarshal the JSON response
@@ -161,12 +176,12 @@ func (o *OpenAIClient) GenerateTitleAndCatchyPhrase(aggregatedText string, retri
 	}
 
 	// If all retries fail, return default values
-	log.Println("Failed to generate title and catchy phrase after retries")
+	log.Printf("Failed to generate title and catchy phrase after %d retries using %s", retries, o.Model.ServiceName)
 	return "No Title", "No phrase available"
 }
 
-// GenerateTitleAndCatchyPhrase is a package-level function that creates a new OpenAIClient and calls its method.
-func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, string) {
-	client := NewOpenAIClient()
+// GenerateTitleAndCatchyPhrase is a package-level function that creates a new OpenAIClient and calls its method
+func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int, model OpenAIModel) (string, string) {
+	client := NewOpenAIClient(model)
 	return client.GenerateTitleAndCatchyPhrase(aggregatedText, retries)
 }
