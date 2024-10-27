@@ -5,6 +5,13 @@ import (
 	"time"
 )
 
+// ServiceOutput represents the output from a single AI service
+type ServiceOutput struct {
+	ServiceName  string
+	Title        string
+	CatchyPhrase string
+}
+
 // CombinedProductDetails represents the combined details of a product.
 type CombinedProductDetails struct {
 	ProductReferenceID string   `json:"product_reference_id"`
@@ -24,6 +31,7 @@ type ClusterDetails struct {
 	Labels              string
 	Images              []string
 	ProductReferenceIDs []string
+	ServiceOutputs      []ServiceOutput // New field for multiple service outputs
 }
 
 // NewCombinedProductDetails creates a new CombinedProductDetails instance.
@@ -40,17 +48,17 @@ func NewCombinedProductDetails(productReferenceID, advertiserID string, price fl
 	}
 }
 
-// PrepareLabelsMapping generates a map for product labels.
-
-// PreparePriceMapping generates a map for product prices.
-
-// PrepareAdvertiserMapping generates a map for advertiser IDs.
-
-// PrepareTitleMapping generates a map for product titles.
-
-// PrepareDescriptionMapping generates a map for product descriptions.
-
-// PrepareUpdatedAtMapping generates a map for updated_at timestamps.
+// NewClusterDetails creates a new ClusterDetails instance
+func NewClusterDetails() ClusterDetails {
+	return ClusterDetails{
+		Title:               "",
+		CatchyPhrase:        "",
+		Labels:              "",
+		Images:              []string{},
+		ProductReferenceIDs: []string{},
+		ServiceOutputs:      []ServiceOutput{},
+	}
+}
 
 // GetFormattedUpdatedAt formats the updated_at field to YYYY-MM-DD.
 func (p *CombinedProductDetails) GetFormattedUpdatedAt() string {
@@ -73,4 +81,27 @@ func ProductDetailsMap(pid string, productDetails []CombinedProductDetails) *Com
 		}
 	}
 	return nil
+}
+
+// GetOutputByServiceName retrieves the output for a specific service from a cluster
+func (c *ClusterDetails) GetOutputByServiceName(serviceName string) (ServiceOutput, bool) {
+	for _, output := range c.ServiceOutputs {
+		if output.ServiceName == serviceName {
+			return output, true
+		}
+	}
+	return ServiceOutput{}, false
+}
+
+// SetServiceOutput adds or updates the output for a specific service
+func (c *ClusterDetails) SetServiceOutput(output ServiceOutput) {
+	// Update existing output if found
+	for i, existing := range c.ServiceOutputs {
+		if existing.ServiceName == output.ServiceName {
+			c.ServiceOutputs[i] = output
+			return
+		}
+	}
+	// Add new output if not found
+	c.ServiceOutputs = append(c.ServiceOutputs, output)
 }

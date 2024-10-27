@@ -18,95 +18,166 @@ func GenerateHTMLOutput(clusters map[string]models.ClusterDetails, tempDir strin
 <!DOCTYPE html>
 <html lang="en">
 <head>
-	<meta charset="UTF-8">
-	<title>Clustered Fashion Items</title>
-	<style>
-		.container {
-			width: 80%;
-			margin: auto;
-		}
-		.cluster {
-			border: 1px solid #ccc;
-			padding: 20px;
-			margin-bottom: 20px;
-		}
-		.image-container {
-			display: flex;
-			flex-wrap: wrap;
-		}
-		.image {
-			margin: 10px;
-		}
-		.image img {
-			max-width: 200px;
-			height: auto;
-		}
-		.submit-button {
-			background-color: #4CAF50;
-			color: white;
-			padding: 10px 20px;
-			border: none;
-			cursor: pointer;
-		}
-	</style>
-	<script>
-		async function publishCluster(clusterId, title, catchyPhrase, productReferenceIds) {
-			const payload = {
-				cluster_id: clusterId,
-				title: title,
-				description: catchyPhrase, // Using catchyPhrase instead of description
-				product_reference_ids: productReferenceIds
-			};
+    <meta charset="UTF-8">
+    <title>Model Comparison - Clustered Fashion Items</title>
+    <style>
+        .container {
+            width: 95%;
+            margin: auto;
+            padding: 20px;
+        }
+        .cluster {
+            border: 1px solid #ccc;
+            padding: 20px;
+            margin-bottom: 30px;
+            border-radius: 8px;
+            background: #fff;
+        }
+        .comparison-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            background: white;
+        }
+        .comparison-table th {
+            background: #f8f9fa;
+            padding: 12px;
+            text-align: left;
+            border-bottom: 2px solid #dee2e6;
+            color: #2c3e50;
+        }
+        .comparison-table td {
+            padding: 12px;
+            border-bottom: 1px solid #dee2e6;
+            vertical-align: top;
+        }
+        .comparison-table tr:hover {
+            background-color: #f8f9fa;
+        }
+        .image-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-top: 20px;
+        }
+        .image {
+            text-align: center;
+            flex: 0 0 200px;
+        }
+        .image img {
+            max-width: 200px;
+            height: auto;
+            border-radius: 4px;
+        }
+        .submit-button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+            font-size: 0.9em;
+        }
+        .submit-button:hover {
+            background-color: #45a049;
+        }
+        .labels {
+            background: #f8f9fa;
+            padding: 10px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            font-size: 0.9em;
+        }
+        .product-id {
+            font-size: 0.8em;
+            color: #666;
+            margin-top: 5px;
+        }
+        .model-name {
+            font-weight: 500;
+            color: #2c3e50;
+        }
+    </style>
+    <script>
+        async function publishCluster(clusterId, title, catchyPhrase, productReferenceIds, modelName) {
+            const payload = {
+                cluster_id: clusterId,
+                title: title,
+                description: catchyPhrase,
+                product_reference_ids: productReferenceIds,
+                model_name: modelName
+            };
 
-			try {
-				const response = await fetch("/publish", {
-					method: "POST",
-					headers: {
-						"Content-Type": "application/json"
-					},
-					body: JSON.stringify(payload)
-				});
+            try {
+                const response = await fetch("/publish", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(payload)
+                });
 
-				const data = await response.json();
-				if (data.success) {
-					alert("Cluster published successfully!");
-				} else {
-					alert("Failed to publish cluster: " + data.error);
-				}
-			} catch (error) {
-				console.error("Error:", error);
-				alert("An error occurred while publishing the cluster.");
-			}
-		}
-	</script>
+                const data = await response.json();
+                if (data.success) {
+                    alert("Cluster published successfully using " + modelName + "!");
+                } else {
+                    alert("Failed to publish cluster: " + data.error);
+                }
+            } catch (error) {
+                console.error("Error:", error);
+                alert("An error occurred while publishing the cluster.");
+            }
+        }
+    </script>
 </head>
 <body>
-	<div class="container">
-		<h1>Clustered Fashion Items</h1>
-		<!-- Clusters -->
-		{{range $cluster_id, $cluster_info := .Clusters}}
-			<div class="cluster">
-				<h2>{{ $cluster_info.Title }}</h2>
-				<p><strong>Labels:</strong> {{ $cluster_info.Labels }}</p>
-				<p><strong>Catchy Phrase:</strong> {{ $cluster_info.CatchyPhrase }}</p>
-				<div class="image-container">
-					{{range $index, $image := $cluster_info.Images}}
-						<div class="image">
-							<img src="/image/{{ $image }}" alt="Image {{ $image }}">
-							<p>Product Reference ID: {{ index $cluster_info.ProductReferenceIDs $index }}</p>
-						</div>
-					{{end}}
-				</div>
-				<!-- Publish Button with Embedded Data -->
-				<button onclick="publishCluster('{{ $cluster_id }}', '{{ escapeJS $cluster_info.Title }}', '{{ escapeJS $cluster_info.CatchyPhrase }}', [{{ range $i, $id := $cluster_info.ProductReferenceIDs }} '{{ $id }}'{{ if ne (add $i 1) (len $cluster_info.ProductReferenceIDs) }}, {{ end }}{{ end }}])" class="submit-button">
-					Publish Cluster
-				</button>
-			</div>
-		{{end}}
-	</div>
+    <div class="container">
+        <h1>Model Comparison - Clustered Fashion Items</h1>
+        {{range $cluster_id, $cluster_info := .Clusters}}
+            <div class="cluster">
+                <div class="labels">
+                    <strong>Labels:</strong> {{ $cluster_info.Labels }}
+                </div>
+                
+                <table class="comparison-table">
+                    <thead>
+                        <tr>
+                            <th>Model</th>
+                            <th>Title</th>
+                            <th>Catchy Phrase</th>
+                            <th>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{range $output := $cluster_info.ServiceOutputs}}
+                            <tr>
+                                <td class="model-name">{{ $output.ServiceName }}</td>
+                                <td>{{ $output.Title }}</td>
+                                <td>{{ $output.CatchyPhrase }}</td>
+                                <td>
+                                    <button onclick="publishCluster('{{ $cluster_id }}', '{{ escapeJS $output.Title }}', '{{ escapeJS $output.CatchyPhrase }}', [{{range $i, $id := $cluster_info.ProductReferenceIDs}}'{{ $id }}'{{if ne (add $i 1) (len $cluster_info.ProductReferenceIDs)}}, {{end}}{{end}}], '{{ $output.ServiceName }}')" class="submit-button">
+                                        Publish
+                                    </button>
+                                </td>
+                            </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+
+                <div class="image-container">
+                    {{range $index, $image := $cluster_info.Images}}
+                        <div class="image">
+                            <img src="/image/{{ $image }}" alt="Product Image">
+                            <p class="product-id">ID: {{ index $cluster_info.ProductReferenceIDs $index }}</p>
+                        </div>
+                    {{end}}
+                </div>
+            </div>
+        {{end}}
+    </div>
 </body>
-</html>
-`
+</html>`
 
 	// Define template functions
 	funcMap := template.FuncMap{

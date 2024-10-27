@@ -313,38 +313,48 @@ func (ps *ProductSetter) FetchProductDetails() ([]models.CombinedProductDetails,
 	return combinedProductDetailsList, nil
 }
 
-// PrepareClusterDetails aggregates cluster information and interacts with GPT
+// PrepareClusterDetails aggregates cluster information and interacts with multiple AI services
 func (ps *ProductSetter) PrepareClusterDetails(clusters map[int][]string, productDetails []models.CombinedProductDetails) map[string]models.ClusterDetails {
 	clusterDetails := make(map[string]models.ClusterDetails)
 
+	// Initialize each cluster
 	for clusterID, products := range clusters {
 		clusterKey := fmt.Sprintf("Cluster-%d", clusterID)
-		clusterDetails[clusterKey] = models.ClusterDetails{
-			ProductReferenceIDs: products,
-			Images:              []string{},
-			Labels:              "",
-			Title:               "",
-			CatchyPhrase:        "",
-		}
+		details := models.NewClusterDetails()
+		details.ProductReferenceIDs = products
+		clusterDetails[clusterKey] = details
 	}
 
 	// Populate each cluster's details
-	for clusterKey, details := range clusterDetails {
+	for clusterKey := range clusterDetails {
+		// Get a copy of the struct
+		details := clusterDetails[clusterKey]
+
 		// Aggregate Labels
 		labelsSet := make(map[string]struct{})
 		var titles []string
 		var descriptions []string
+		var images []string
+
+		// Collect information from each product in the cluster
 		for _, pid := range details.ProductReferenceIDs {
 			product := models.ProductDetailsMap(pid, productDetails)
 			if product != nil {
+				// Collect labels
 				for _, label := range product.Labels {
 					labelsSet[label] = struct{}{}
 				}
+				// Collect titles and descriptions
 				if product.Title != "" {
 					titles = append(titles, product.Title)
 				}
 				if product.Description != "" {
 					descriptions = append(descriptions, product.Description)
+				}
+				// Collect image paths
+				if product.ImagePath != "" {
+					imageFilename := filepath.Base(product.ImagePath)
+					images = append(images, imageFilename)
 				}
 			}
 		}
@@ -356,33 +366,57 @@ func (ps *ProductSetter) PrepareClusterDetails(clusters map[int][]string, produc
 		}
 		aggregatedLabels := strings.Join(labelsList, ", ")
 		details.Labels = aggregatedLabels
+		details.Images = images
 
+		// Clean and aggregate titles and descriptions
 		aggregatedTitles := utils.CleanText(strings.Join(titles, ", "))
 		aggregatedDescriptions := utils.CleanText(strings.Join(descriptions, ", "))
 
-		// Combine aggregated features for GPT
-		aggregatedFeatures := fmt.Sprintf("Labels: %s. Titles: %s. Descriptions: %s.", aggregatedLabels, aggregatedTitles, aggregatedDescriptions)
+		// Combine aggregated features for AI services
+		aggregatedFeatures := fmt.Sprintf("Labels: %s. Titles: %s. Descriptions: %s.",
+			aggregatedLabels, aggregatedTitles, aggregatedDescriptions)
 
-		aiServiceFlag := ai_wrapper.Claude3Service // Change this value to switch between services
+		// Generate outputs from all AI services
+		modelOutputs := ai_wrapper.GenerateTitleAndCatchyPhraseMultiService(aggregatedFeatures, 3)
 
-		// Generate title and catchy phrase using the selected AI service
-		title, catchyPhrase := ai_wrapper.GenerateTitleAndCatchyPhrase(aggregatedFeatures, 3, aiServiceFlag)
+		// Store results from each service
+		for _, output := range modelOutputs {
+			serviceOutput := models.ServiceOutput{
+				ServiceName:  output.ServiceName,
+				Title:        output.Title,
+				CatchyPhrase: output.CatchyPhrase,
+			}
+			details.SetServiceOutput(serviceOutput)
 
-		// Assign GPT-generated title and catchy phrase
-		details.Title = title
-		details.CatchyPhrase = catchyPhrase
-
-		// Gather image filenames
-		for _, pid := range details.ProductReferenceIDs {
-			product := models.ProductDetailsMap(pid, productDetails)
-			if product != nil && product.ImagePath != "" {
-				imageFilename := filepath.Base(product.ImagePath)
-				details.Images = append(details.Images, imageFilename)
+			// Set the default service output (Claude 3) for backward compatibility
+			if output.ServiceName == "Claude 3" {
+				details.Title = output.Title
+				details.CatchyPhrase = output.CatchyPhrase
 			}
 		}
 
-		// Update the cluster details
+		// If no Claude 3 output was found, use the first available service output
+		if details.Title == "" && details.CatchyPhrase == "" && len(modelOutputs) > 0 {
+			details.Title = modelOutputs[0].Title
+			details.CatchyPhrase = modelOutputs[0].CatchyPhrase
+		}
+
+		// Update the cluster details in the map
 		clusterDetails[clusterKey] = details
+
+		// Log the preparation of this cluster
+		log.Printf("Prepared cluster %s:", clusterKey)
+		log.Printf("  Labels: %s", details.Labels)
+		log.Printf("  Number of products: %d", len(details.ProductReferenceIDs))
+		log.Printf("  Number of images: %d", len(details.Images))
+		log.Printf("  Default Title: %s", details.Title)
+		log.Printf("  Default Catchy Phrase: %s", details.CatchyPhrase)
+		log.Printf("  Service Outputs:")
+		for _, output := range details.ServiceOutputs {
+			log.Printf("    %s:", output.ServiceName)
+			log.Printf("      Title: %s", output.Title)
+			log.Printf("      Catchy Phrase: %s", output.CatchyPhrase)
+		}
 	}
 
 	return clusterDetails
