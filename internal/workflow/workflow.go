@@ -1,10 +1,9 @@
-// Package productsetter
-package productsetter
+package workflow
 
 import (
 	"encoding/json"
 	"fmt"
-	"imageclust/ai_wrapper"
+	"imageclust/internal/ai"
 	"io"
 	"log"
 	"net/http"
@@ -15,29 +14,29 @@ import (
 	"sync"
 	"time"
 
-	"imageclust/clustering"
-	"imageclust/embeddings"
-	"imageclust/models"
-	"imageclust/rekognitionservice"
-	"imageclust/utils"
+	"imageclust/internal/clustering"
+	"imageclust/internal/embeddings"
+	"imageclust/internal/models"
+	"imageclust/internal/rekognition"
+	"imageclust/internal/utils"
 )
 
-// ProductSetter holds the configuration and dependencies for the application
-type ProductSetter struct {
+// ImageCluster holds the configuration and dependencies for the application
+type ImageCluster struct {
 	ProfileID         string
 	AuthToken         string
 	NumberOfDaysLimit int
 	TempDir           string
 	Client            *http.Client
-	RekognitionSvc    *rekognitionservice.RekognitionService
+	RekognitionSvc    *rekognition.RekognitionService
 	EmbeddingsModel   *embeddings.AppContext
 	MinClusterSize    int
 	MaxClusterSize    int
 	Mutex             sync.Mutex
 }
 
-// NewProductSetter initializes and returns a new ProductSetter instance
-func NewProductSetter(profileID, authToken string, numberOfDaysLimit int, minClusterSize, maxClusterSize int, tempDir string) (*ProductSetter, error) {
+// NewImageCluster initializes and returns a new NewImageCluster instance
+func NewImageCluster(profileID, authToken string, numberOfDaysLimit int, minClusterSize, maxClusterSize int, tempDir string) (*ImageCluster, error) {
 	// Initialize HTTP client with timeout
 	client := &http.Client{
 		Timeout: 30 * time.Second,
@@ -53,7 +52,7 @@ func NewProductSetter(profileID, authToken string, numberOfDaysLimit int, minClu
 	}
 
 	// Initialize RekognitionService with desired AWS region and cache directory
-	rekogSvc, err := rekognitionservice.NewRekognitionService("us-east-1", appCtx.CacheDir)
+	rekogSvc, err := rekognition.NewRekognitionService("us-east-1", appCtx.CacheDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize RekognitionService: %v", err)
 	}
@@ -69,7 +68,7 @@ func NewProductSetter(profileID, authToken string, numberOfDaysLimit int, minClu
 	appCtx.Net = net
 
 	// Return the initialized ProductSetter instance
-	return &ProductSetter{
+	return &ImageCluster{
 		ProfileID:         profileID,
 		AuthToken:         authToken,
 		NumberOfDaysLimit: numberOfDaysLimit,
@@ -83,7 +82,7 @@ func NewProductSetter(profileID, authToken string, numberOfDaysLimit int, minClu
 }
 
 // Run executes the main workflow of the ProductSetter application
-func (ps *ProductSetter) Run() (map[string]models.ClusterDetails, string, error) {
+func (ps *ImageCluster) Run() (map[string]models.ClusterDetails, string, error) {
 	startTime := time.Now()
 	log.Println("Starting ProductSetter run...")
 
@@ -156,7 +155,7 @@ func (ps *ProductSetter) Run() (map[string]models.ClusterDetails, string, error)
 }
 
 // CreateEmbeddingsForAllProducts generates embeddings for all products concurrently
-func (ps *ProductSetter) CreateEmbeddingsForAllProducts(productDetails []models.CombinedProductDetails) ([][]float32, []string, error) {
+func (ps *ImageCluster) CreateEmbeddingsForAllProducts(productDetails []models.CombinedProductDetails) ([][]float32, []string, error) {
 	embeddingsList := make([][]float32, len(productDetails))
 	productReferenceIDs := make([]string, len(productDetails))
 	var mu sync.Mutex
@@ -209,7 +208,7 @@ func (ps *ProductSetter) CreateEmbeddingsForAllProducts(productDetails []models.
 }
 
 // FetchProductDetails retrieves product details from the API, downloads images, and fetches labels
-func (ps *ProductSetter) FetchProductDetails() ([]models.CombinedProductDetails, error) {
+func (ps *ImageCluster) FetchProductDetails() ([]models.CombinedProductDetails, error) {
 	combinedProductDetailsList := make([]models.CombinedProductDetails, 0)
 	var mu sync.Mutex
 
@@ -314,7 +313,7 @@ func (ps *ProductSetter) FetchProductDetails() ([]models.CombinedProductDetails,
 }
 
 // PrepareClusterDetails aggregates cluster information and interacts with multiple AI services
-func (ps *ProductSetter) PrepareClusterDetails(clusters map[int][]string, productDetails []models.CombinedProductDetails) map[string]models.ClusterDetails {
+func (ps *ImageCluster) PrepareClusterDetails(clusters map[int][]string, productDetails []models.CombinedProductDetails) map[string]models.ClusterDetails {
 	clusterDetails := make(map[string]models.ClusterDetails)
 
 	// Initialize each cluster
@@ -377,7 +376,7 @@ func (ps *ProductSetter) PrepareClusterDetails(clusters map[int][]string, produc
 			aggregatedLabels, aggregatedTitles, aggregatedDescriptions)
 
 		// Generate outputs from all AI services
-		modelOutputs := ai_wrapper.GenerateTitleAndCatchyPhraseMultiService(aggregatedFeatures, 3)
+		modelOutputs := ai.GenerateTitleAndCatchyPhraseMultiService(aggregatedFeatures, 3)
 
 		// Store results from each service
 		for _, output := range modelOutputs {
@@ -423,7 +422,7 @@ func (ps *ProductSetter) PrepareClusterDetails(clusters map[int][]string, produc
 }
 
 // fetchProductDetail retrieves detailed information for a single product and downloads its image
-func (ps *ProductSetter) fetchProductDetail(productRefID string) (*models.CombinedProductDetails, error) {
+func (ps *ImageCluster) fetchProductDetail(productRefID string) (*models.CombinedProductDetails, error) {
 	encodedProductRefID := utils.URLEncode(productRefID)
 
 	productDetailURL := fmt.Sprintf("http://qa-rs-product-service.rslocal/v1/retailer_product_references?ids[]=%s", encodedProductRefID)
@@ -501,7 +500,7 @@ func (ps *ProductSetter) fetchProductDetail(productRefID string) (*models.Combin
 }
 
 // downloadImage downloads an image from the given URL and saves it to the image directory
-func (ps *ProductSetter) downloadImage(imageURL, productRefID string) (string, error) {
+func (ps *ImageCluster) downloadImage(imageURL, productRefID string) (string, error) {
 	if imageURL == "" {
 		return "", fmt.Errorf("empty image URL for %s", productRefID)
 	}

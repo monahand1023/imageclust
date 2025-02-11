@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"github.com/gorilla/mux"
-	"imageclust/handlers"
+	"imageclust/internal/handlers"
 )
 
 var (
