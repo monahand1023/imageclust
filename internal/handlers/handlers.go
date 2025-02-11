@@ -65,7 +65,6 @@ type PublishResponse struct {
 	Error   string `json:"error,omitempty"`
 }
 
-// APIURL is the endpoint for publishing clusters.
 // Replace this with the actual API URL as needed.
 const APIURL = "https://qa-api-gateway.rewardstyle.com/api/pub/v1/shops/create_shop_product_collection"
 
@@ -122,7 +121,7 @@ func (h *Handler) ClusterAndGenerateHandler(w http.ResponseWriter, r *http.Reque
 	h.AuthToken = appConfig.AuthToken
 
 	// Create a temporary directory
-	tempDir, err := os.MkdirTemp("", "productsetter_*")
+	tempDir, err := os.MkdirTemp("", "imagecluster_*")
 	if err != nil {
 		log.Printf("Failed to create temporary directory: %v", err)
 		http.Error(w, "Failed to create temporary directory.", http.StatusInternalServerError)
@@ -133,7 +132,7 @@ func (h *Handler) ClusterAndGenerateHandler(w http.ResponseWriter, r *http.Reque
 	// Set the temp directory globally for image serving
 	SetTempDir(tempDir)
 
-	// Initialize ProductSetter
+	// Initialize imagecluster
 	productSetter, err := workflow.NewImageCluster(
 		appConfig.ProfileID,
 		appConfig.AuthToken,
