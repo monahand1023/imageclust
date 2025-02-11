@@ -2,9 +2,9 @@
 package embeddings
 
 import (
-	"ProductSetter/rekognitionservice"
 	"fmt"
 	"image"
+	"imageclust/rekognitionservice"
 	"log"
 	"path/filepath"
 	"sync"

@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/ProductSetter.iml" filepath="$PROJECT_DIR$/.idea/ProductSetter.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/imageclust.iml" filepath="$PROJECT_DIR$/.idea/imageclust.iml" />
     </modules>
   </component>
 </project>

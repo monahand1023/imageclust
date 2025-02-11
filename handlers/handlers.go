@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"ProductSetter/productsetter"
-	"ProductSetter/utils"
+	"imageclust/productsetter"
+	"imageclust/utils"
 )
 
 // Handler encapsulates the necessary credentials and dependencies.

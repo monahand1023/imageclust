@@ -2,10 +2,10 @@
 package utils
 
 import (
-	"ProductSetter/models"
 	"bytes"
 	"fmt"
 	"html/template"
+	"imageclust/models"
 	"log"
 	"os"
 	"path/filepath"

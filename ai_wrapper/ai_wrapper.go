@@ -1,10 +1,10 @@
 package ai_wrapper
 
 import (
-	"ProductSetter/bedrock_utils"
-	"ProductSetter/claude3_utils"
-	"ProductSetter/claude_utils"
-	"ProductSetter/openai_utils"
+	"imageclust/bedrock_utils"
+	"imageclust/claude3_utils"
+	"imageclust/claude_utils"
+	"imageclust/openai_utils"
 	"sync"
 )
 

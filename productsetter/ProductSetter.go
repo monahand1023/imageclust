@@ -2,9 +2,9 @@
 package productsetter
 
 import (
-	"ProductSetter/ai_wrapper"
 	"encoding/json"
 	"fmt"
+	"imageclust/ai_wrapper"
 	"io"
 	"log"
 	"net/http"
@@ -15,11 +15,11 @@ import (
 	"sync"
 	"time"
 
-	"ProductSetter/clustering"
-	"ProductSetter/embeddings"
-	"ProductSetter/models"
-	"ProductSetter/rekognitionservice"
-	"ProductSetter/utils"
+	"imageclust/clustering"
+	"imageclust/embeddings"
+	"imageclust/models"
+	"imageclust/rekognitionservice"
+	"imageclust/utils"
 )
 
 // ProductSetter holds the configuration and dependencies for the application

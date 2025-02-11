@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"sync"
 
-	"ProductSetter/handlers"
 	"github.com/gorilla/mux"
+	"imageclust/handlers"
 )
 
 var (
