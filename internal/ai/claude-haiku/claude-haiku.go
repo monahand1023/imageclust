@@ -1,4 +1,4 @@
-package claude2
+package claude_haiku
 
 import (
 	"context"
@@ -15,14 +15,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 )
 
-// Claude21Request represents the structure expected by Claude 2.1
-type Claude21Request struct {
+// ClaudeHaikuRequest represents the structure expected by Claude Haiku
+type ClaudeHaikuRequest struct {
 	Prompt            string `json:"prompt"`
 	MaxTokensToSample int    `json:"max_tokens_to_sample"`
 }
 
-// Claude21Response represents the structure of the response from Claude 2.1
-type Claude21Response struct {
+// ClaudeHaikuResponse represents the structure of the response from Claude 2.1
+type ClaudeHaikuResponse struct {
 	Completion string `json:"completion"`
 }
 
@@ -31,10 +31,10 @@ type BedrockClient struct {
 	client *bedrockruntime.Client
 }
 
-// NewBedrockClient returns a new instance of BedrockClient
-func NewBedrockClient() (*BedrockClient, error) {
+// InstantiateBedrockClient returns a new instance of BedrockClient
+func InstantiateBedrockClient() (*BedrockClient, error) {
 	cfg, err := config.LoadDefaultConfig(context.Background(),
-		config.WithRegion("us-east-1"),
+		config.WithRegion("us-west-2"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("unable to load AWS config: %v", err)
@@ -61,7 +61,7 @@ Features: %s.
 Assistant:`, sanitizedText)
 
 		// Create the request body
-		requestBody := Claude21Request{
+		requestBody := ClaudeHaikuRequest{
 			Prompt:            prompt,
 			MaxTokensToSample: 500,
 		}
@@ -74,12 +74,12 @@ Assistant:`, sanitizedText)
 		}
 
 		// Log the request being sent to Claude
-		log.Println("Sending request to Claude 2.1 via Bedrock:")
+		log.Println("Sending request to Claude Haiku v3.5 via Bedrock:")
 		log.Println(string(requestData))
 
 		// Create the Bedrock invoke request
 		input := &bedrockruntime.InvokeModelInput{
-			ModelId:     aws.String("anthropic.claude-v2:1"),
+			ModelId:     aws.String("anthropic.claude-3-5-haiku-20241022-v1:0"),
 			Body:        requestData,
 			ContentType: aws.String("application/json"),
 			Accept:      aws.String("application/json"),
@@ -94,7 +94,7 @@ Assistant:`, sanitizedText)
 		}
 
 		// Parse the response
-		var claudeResp Claude21Response
+		var claudeResp ClaudeHaikuResponse
 		err = json.Unmarshal(output.Body, &claudeResp)
 		if err != nil {
 			log.Printf("Error unmarshaling Claude response: %v", err)
@@ -170,7 +170,7 @@ func truncateAndSanitize(input string, maxLen int) string {
 
 // GenerateTitleAndCatchyPhrase is a package-level function that creates a new BedrockClient and calls its method
 func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, string) {
-	client, err := NewBedrockClient()
+	client, err := InstantiateBedrockClient()
 	if err != nil {
 		log.Printf("Error creating Bedrock client: %v", err)
 		return "No Title", "No phrase available"

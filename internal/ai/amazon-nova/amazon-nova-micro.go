@@ -1,4 +1,4 @@
-package bedrock
+package amazon_nova
 
 import (
 	"context"
@@ -14,8 +14,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 )
 
-// BedrockResponse represents the structure of the response from Amazon Bedrock
-type BedrockResponse struct {
+// AmazonNovaMicroResponse represents the structure of the response from Amazon Bedrock
+type AmazonNovaMicroResponse struct {
 	Results []struct {
 		OutputText string `json:"outputText"`
 	} `json:"Results"`
@@ -24,7 +24,7 @@ type BedrockResponse struct {
 func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, string) {
 	// Load AWS configuration with explicit region
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
-		config.WithRegion("us-east-1"),
+		config.WithRegion("us-west-2"),
 	)
 	if err != nil {
 		log.Printf("Unable to load AWS SDK config: %v", err)
@@ -35,7 +35,7 @@ func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, s
 	client := bedrockruntime.NewFromConfig(cfg)
 
 	// Define the Bedrock model ID you want to use
-	modelID := "amazon.titan-text-premier-v1:0"
+	modelID := "amazon.nova-micro-v1:0"
 
 	// Truncate and sanitize aggregatedText
 	sanitizedText := truncateAndSanitize(aggregatedText, 1000)
@@ -89,7 +89,7 @@ func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, s
 		bodyBytes := resp.Body
 
 		// Parse the response JSON
-		var bedrockResp BedrockResponse
+		var bedrockResp AmazonNovaMicroResponse
 		err = json.Unmarshal(bodyBytes, &bedrockResp)
 		if err != nil {
 			log.Printf("Error unmarshaling Bedrock response: %v", err)

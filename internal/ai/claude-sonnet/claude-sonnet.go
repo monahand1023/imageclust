@@ -1,4 +1,4 @@
-package claude3
+package claude_sonnet
 
 import (
 	"context"
@@ -39,7 +39,7 @@ type BedrockClient struct {
 // NewBedrockClient returns a new instance of BedrockClient
 func NewBedrockClient() (*BedrockClient, error) {
 	cfg, err := config.LoadDefaultConfig(context.Background(),
-		config.WithRegion("us-east-1"),
+		config.WithRegion("us-west-2"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("unable to load AWS config: %v", err)
@@ -65,7 +65,7 @@ Features: %s.`, sanitizedText)
 
 		// Create the request body
 		requestBody := Claude3Request{
-			AnthropicVersion: "bedrock-2023-05-31",
+			AnthropicVersion: "amazon-nova-2023-05-31",
 			Messages: []struct {
 				Role    string `json:"role"`
 				Content string `json:"content"`
@@ -86,12 +86,12 @@ Features: %s.`, sanitizedText)
 		}
 
 		// Log the request being sent to Claude
-		log.Println("Sending request to Claude 3 via Bedrock:")
+		log.Println("Sending request to Claude Sonnet v3.5 via Bedrock:")
 		log.Println(string(requestData))
 
 		// Create the Bedrock invoke request
 		input := &bedrockruntime.InvokeModelInput{
-			ModelId:     aws.String("anthropic.claude-3-5-sonnet-20240620-v1:0"),
+			ModelId:     aws.String("anthropic.claude-3-5-sonnet-20241022-v2:0"),
 			Body:        requestData,
 			ContentType: aws.String("application/json"),
 			Accept:      aws.String("application/json"),

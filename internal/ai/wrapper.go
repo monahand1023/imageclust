@@ -1,9 +1,9 @@
 package ai
 
 import (
-	"imageclust/internal/ai/bedrock"
-	"imageclust/internal/ai/claude2"
-	"imageclust/internal/ai/claude3"
+	"imageclust/internal/ai/amazon-nova"
+	"imageclust/internal/ai/claude-haiku"
+	"imageclust/internal/ai/claude-sonnet"
 	"imageclust/internal/ai/openai"
 	"sync"
 )
@@ -70,15 +70,15 @@ var AvailableServices = []ServiceConfig{
 func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int, serviceType int) (string, string) {
 	switch serviceType {
 	case BedrockService:
-		return bedrock.GenerateTitleAndCatchyPhrase(aggregatedText, retries)
+		return amazon_nova.GenerateTitleAndCatchyPhrase(aggregatedText, retries)
 	case GPT4Service:
 		return openai.GenerateTitleAndCatchyPhrase(aggregatedText, retries, openai.GPT4)
 	case GPT35Service:
 		return openai.GenerateTitleAndCatchyPhrase(aggregatedText, retries, openai.GPT35Turbo)
 	case ClaudeService:
-		return claude2.GenerateTitleAndCatchyPhrase(aggregatedText, retries)
+		return claude_haiku.GenerateTitleAndCatchyPhrase(aggregatedText, retries)
 	case Claude3Service:
-		return claude3.GenerateTitleAndCatchyPhrase(aggregatedText, retries)
+		return claude_sonnet.GenerateTitleAndCatchyPhrase(aggregatedText, retries)
 	default:
 		return "No Title", "No Catchy Phrase"
 	}
@@ -99,15 +99,15 @@ func GenerateTitleAndCatchyPhraseMultiService(aggregatedText string, retries int
 
 			switch svc.ServiceType {
 			case BedrockService:
-				title, catchyPhrase = bedrock.GenerateTitleAndCatchyPhrase(aggregatedText, retries)
+				title, catchyPhrase = amazon_nova.GenerateTitleAndCatchyPhrase(aggregatedText, retries)
 			case GPT4Service, GPT35Service:
 				if openaiModel, ok := svc.Model.(openai.OpenAIModel); ok {
 					title, catchyPhrase = openai.GenerateTitleAndCatchyPhrase(aggregatedText, retries, openaiModel)
 				}
 			case ClaudeService:
-				title, catchyPhrase = claude2.GenerateTitleAndCatchyPhrase(aggregatedText, retries)
+				title, catchyPhrase = claude_haiku.GenerateTitleAndCatchyPhrase(aggregatedText, retries)
 			case Claude3Service:
-				title, catchyPhrase = claude3.GenerateTitleAndCatchyPhrase(aggregatedText, retries)
+				title, catchyPhrase = claude_sonnet.GenerateTitleAndCatchyPhrase(aggregatedText, retries)
 			}
 
 			mu.Lock()

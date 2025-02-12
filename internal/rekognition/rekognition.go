@@ -28,7 +28,7 @@ type RekognitionService struct {
 
 // NewRekognitionService initializes the Rekognition client and cache directory.
 // Parameters:
-// - region: AWS region (e.g., "us-east-1").
+// - region: AWS region (e.g., "us-west-2").
 // - cacheDir: Directory path where cached labels will be stored.
 func NewRekognitionService(region, cacheDir string) (*RekognitionService, error) {
 	var cfg aws.Config
