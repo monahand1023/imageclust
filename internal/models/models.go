@@ -12,6 +12,11 @@ type ServiceOutput struct {
 	CatchyPhrase string
 }
 
+type UploadedImage struct {
+	Filename string
+	Data     []byte
+}
+
 // CombinedProductDetails represents the combined details of a product.
 type CombinedProductDetails struct {
 	ProductReferenceID string   `json:"product_reference_id"`

@@ -1,23 +1,26 @@
-// Package handlers/handlers.go
 package handlers
 
 import (
-	"bytes"
 	"encoding/json"
-	"fmt"
-	"github.com/gorilla/mux"
+	"imageclust/internal/models"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
 
+	"github.com/gorilla/mux"
 	"imageclust/internal/config"
 	"imageclust/internal/utils"
 	"imageclust/internal/workflow"
 )
+
+// SpaHandler implements the http.Handler interface for serving a Single Page Application
+type SpaHandler struct {
+	StaticPath string
+	IndexPath  string
+}
 
 // Handler encapsulates the necessary credentials and dependencies.
 type Handler struct {
@@ -50,24 +53,6 @@ func GetTempDir() string {
 	return currentTempDir
 }
 
-// PublishRequest represents the expected JSON payload for the publish endpoint.
-type PublishRequest struct {
-	ClusterID           string   `json:"cluster_id"`
-	Title               string   `json:"title"`
-	Description         string   `json:"description"`
-	ProductReferenceIDs []string `json:"product_reference_ids"`
-}
-
-// PublishResponse represents the JSON response structure.
-type PublishResponse struct {
-	Success bool   `json:"success"`
-	Message string `json:"message,omitempty"`
-	Error   string `json:"error,omitempty"`
-}
-
-// Replace this with the actual API URL as needed.
-const APIURL = "https://qa-api-gateway.rewardstyle.com/api/pub/v1/shops/create_shop_product_collection"
-
 // EnableCORS adds the necessary headers to allow cross-origin requests
 func EnableCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -86,7 +71,6 @@ func EnableCORS(next http.Handler) http.Handler {
 	})
 }
 
-// ClusterAndGenerateHandler handles the clustering and response generation.
 func (h *Handler) ClusterAndGenerateHandler(w http.ResponseWriter, r *http.Request) {
 	log.Println("Route /cluster_and_generate was called")
 
@@ -132,11 +116,37 @@ func (h *Handler) ClusterAndGenerateHandler(w http.ResponseWriter, r *http.Reque
 	// Set the temp directory globally for image serving
 	SetTempDir(tempDir)
 
+	// Process uploaded images
+	uploadedImages := []models.UploadedImage{}
+	files := r.MultipartForm.File["images"]
+	for _, fileHeader := range files {
+		file, err := fileHeader.Open()
+		if err != nil {
+			log.Printf("Error opening uploaded file: %v", err)
+			continue
+		}
+		defer file.Close()
+
+		data, err := io.ReadAll(file)
+		if err != nil {
+			log.Printf("Error reading uploaded file: %v", err)
+			continue
+		}
+
+		sanitizedFilename := utils.SanitizeFilename(fileHeader.Filename)
+		uploadedImages = append(uploadedImages, models.UploadedImage{
+			Filename: sanitizedFilename,
+			Data:     data,
+		})
+	}
+
+	if len(uploadedImages) == 0 {
+		http.Error(w, "No valid images uploaded", http.StatusBadRequest)
+		return
+	}
+
 	// Initialize imagecluster
 	productSetter, err := workflow.NewImageCluster(
-		appConfig.ProfileID,
-		appConfig.AuthToken,
-		appConfig.NumberOfDaysLimit,
 		appConfig.MinClusterSize,
 		appConfig.MaxClusterSize,
 		tempDir,
@@ -148,18 +158,10 @@ func (h *Handler) ClusterAndGenerateHandler(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Run the main workflow
-	clusterDetails, _, err := productSetter.Run() // Ignoring htmlOutputPath to fix the unused variable error
+	_, htmlFilePath, err := productSetter.Run(uploadedImages)
 	if err != nil {
 		log.Printf("Error during ProductSetter run: %v", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	// Generate the HTML output and save it to tempDir
-	htmlFilePath, err := utils.GenerateHTMLOutput(clusterDetails, tempDir)
-	if err != nil {
-		log.Printf("Error during HTML generation: %v", err)
-		http.Error(w, "Failed to generate HTML output.", http.StatusInternalServerError)
 		return
 	}
 
@@ -168,137 +170,6 @@ func (h *Handler) ClusterAndGenerateHandler(w http.ResponseWriter, r *http.Reque
 
 	// Redirect the client to the /view endpoint to display the HTML
 	http.Redirect(w, r, "/view", http.StatusSeeOther)
-}
-
-// PublishHandler handles the publishing of a cluster.
-func (h *Handler) PublishHandler(w http.ResponseWriter, r *http.Request) {
-	log.Println("Route /publish was called")
-
-	if r.Method != http.MethodPost {
-		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
-		return
-	}
-
-	// Parse JSON body
-	var req PublishRequest
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		log.Printf("Error reading request body: %v", err)
-		respondWithError(w, http.StatusBadRequest, "Invalid request body")
-		return
-	}
-	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-
-		}
-	}(r.Body)
-
-	err = json.Unmarshal(body, &req)
-	if err != nil {
-		log.Printf("Error unmarshaling JSON: %v", err)
-		respondWithError(w, http.StatusBadRequest, "Invalid JSON format")
-		return
-	}
-
-	if req.ClusterID == "" || req.Title == "" || req.Description == "" || len(req.ProductReferenceIDs) == 0 {
-		respondWithError(w, http.StatusBadRequest, "Missing required fields in request")
-		return
-	}
-
-	// Retrieve profileID and authToken from Handler's fields
-	profileID := h.ProfileID
-	authToken := h.AuthToken
-	log.Printf("Retrieved from Handler - PROFILE_ID: %s, AUTH_TOKEN: %s", profileID, authToken)
-
-	if profileID == "" || authToken == "" {
-		respondWithError(w, http.StatusBadRequest, "ProfileID or AuthToken not set. Please invoke /cluster_and_generate first.")
-		return
-	}
-
-	// Construct the payload for the publish API
-	payload := map[string]interface{}{
-		"add_product_reference_ids": req.ProductReferenceIDs,
-		"subtype":                   "",
-		"title":                     req.Title,
-		"description":               req.Description,
-		"attributes":                map[string]interface{}{}, // Empty JSON object
-		"profile_id":                profileID,
-	}
-
-	// Marshal payload to JSON for logging
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		log.Printf("Error marshaling payload: %v", err)
-		respondWithError(w, http.StatusInternalServerError, "Failed to prepare payload")
-		return
-	}
-
-	// Log the equivalent curl command
-	curlCommand := fmt.Sprintf(`
-curl -X POST "%s" \
-     -H "Authorization: Bearer %s" \
-     -H "Content-Type: application/json" \
-     -d '%s'
-`, APIURL, authToken, string(payloadBytes))
-	log.Println("Equivalent curl command:\n" + curlCommand)
-
-	// Create the HTTP request
-	reqPublish, err := http.NewRequest("POST", APIURL, bytes.NewBuffer(payloadBytes))
-	if err != nil {
-		log.Printf("Error creating HTTP request: %v", err)
-		respondWithError(w, http.StatusInternalServerError, "Failed to create request to external API")
-		return
-	}
-
-	// Set headers
-	reqPublish.Header.Set("Authorization", "Bearer "+authToken)
-	reqPublish.Header.Set("Content-Type", "application/json")
-
-	// Create the HTTP client with a timeout
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
-
-	// Perform the HTTP POST request
-	resp, err := client.Do(reqPublish)
-	if err != nil {
-		log.Printf("Error performing HTTP request: %v", err)
-		respondWithError(w, http.StatusInternalServerError, "Failed to perform request to external API")
-		return
-	}
-	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-
-		}
-	}(resp.Body)
-
-	// Read the response body
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		log.Printf("Error reading external API response: %v", err)
-		respondWithError(w, http.StatusInternalServerError, "Failed to read response from external API")
-		return
-	}
-
-	// Handle the response based on status code
-	if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusCreated {
-		log.Printf("Shop product collection created successfully for cluster: %s", req.Title)
-		response := PublishResponse{
-			Success: true,
-			Message: "Shop product collection created successfully",
-		}
-		respondWithJSON(w, http.StatusOK, response)
-	} else {
-		log.Printf("Failed to create shop product collection. Status code: %d", resp.StatusCode)
-		log.Printf("Response: %s", string(respBody))
-		response := PublishResponse{
-			Success: false,
-			Error:   fmt.Sprintf("Failed to create shop product collection. Status code: %d", resp.StatusCode),
-		}
-		respondWithJSON(w, resp.StatusCode, response)
-	}
 }
 
 // ViewHandler serves the generated HTML file at /view
@@ -338,14 +209,14 @@ func (h *Handler) ImageHandler(w http.ResponseWriter, r *http.Request) {
 
 // respondWithError sends an error response in JSON format.
 func respondWithError(w http.ResponseWriter, code int, message string) {
-	respondWithJSON(w, code, PublishResponse{
-		Success: false,
-		Error:   message,
+	respondWithJSON(w, code, map[string]interface{}{
+		"success": false,
+		"error":   message,
 	})
 }
 
 // respondWithJSON sends a response in JSON format.
-func respondWithJSON(w http.ResponseWriter, code int, payload PublishResponse) {
+func respondWithJSON(w http.ResponseWriter, code int, payload map[string]interface{}) {
 	response, err := json.Marshal(payload)
 	if err != nil {
 		log.Printf("Error marshaling response JSON: %v", err)
@@ -355,4 +226,33 @@ func respondWithJSON(w http.ResponseWriter, code int, payload PublishResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	w.Write(response)
+}
+
+// ServeHTTP handles all requests by attempting to serve static files first,
+// and falling back to serving index.html for any non-file routes
+func (h SpaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Get the absolute path to prevent directory traversal
+	path, err := filepath.Abs(r.URL.Path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Prepend the static file path
+	path = filepath.Join(h.StaticPath, path)
+
+	// Check if the file exists
+	_, err = os.Stat(path)
+	if os.IsNotExist(err) {
+		// File doesn't exist, serve index.html
+		indexPath := filepath.Join(h.StaticPath, h.IndexPath)
+		http.ServeFile(w, r, indexPath)
+		return
+	} else if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Serve the static file
+	http.FileServer(http.Dir(h.StaticPath)).ServeHTTP(w, r)
 }
