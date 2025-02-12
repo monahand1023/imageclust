@@ -63,9 +63,8 @@ func (b *BedrockClient) GenerateTitleAndCatchyPhrase(aggregatedText string, retr
 			Messages: []Message{
 				{
 					Role: "user",
-					Content: fmt.Sprintf(`You are an assistant that generates concise and creative titles and catchy phrases for product clusters.
+					Content: fmt.Sprintf(`You are an assistant that generates concise and creative titles and catchy phrases for image clusters.
 Each title must be no more than 25 characters, and each catchy phrase must be no more than 100 characters. 
-Use first-person voice; avoid using 'we' and express using 'I' or 'my'. 
 Return the results in JSON format with the fields 'title' and 'catchy_phrase' only.
 Do not include any extra text, markdown, or code block formatting in your response.
 Ensure that only the JSON object is returned.

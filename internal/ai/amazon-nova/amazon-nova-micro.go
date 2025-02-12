@@ -42,9 +42,8 @@ func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, s
 
 	// Construct the prompt text
 	promptText := fmt.Sprintf(
-		"You are an assistant that generates a single concise and creative title and a catchy phrase for a product cluster. "+
+		"You are an assistant that generates a single concise and creative title and a catchy phrase for an image cluster. "+
 			"The title must be no more than 25 characters, and the catchy phrase must be no more than 100 characters. "+
-			"Use first-person voice; avoid using 'we' and express using 'I' or 'my'. "+
 			"Return the results in JSON format with the fields 'title' and 'catchy_phrase' only. "+
 			"Do not include any Markdown or code block formatting in your response. "+
 			"Ensure that only one JSON object is returned, containing only these two fields. "+
