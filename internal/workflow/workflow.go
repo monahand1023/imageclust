@@ -6,7 +6,6 @@ import (
 	"imageclust/internal/clustering"
 	"imageclust/internal/embeddings"
 	"imageclust/internal/models"
-	"imageclust/internal/progress"
 	"imageclust/internal/rekognition"
 	"imageclust/internal/utils"
 	"log"
@@ -26,6 +25,12 @@ type ImageCluster struct {
 	Mutex           sync.Mutex
 }
 
+type ItemDetails struct {
+	ID        string
+	ImagePath string
+	Labels    []string
+}
+
 func NewImageCluster(minClusterSize, maxClusterSize int, tempDir string) (*ImageCluster, error) {
 	log.Printf("Initializing ImageCluster with min=%d, max=%d clusters", minClusterSize, maxClusterSize)
 
@@ -36,15 +41,12 @@ func NewImageCluster(minClusterSize, maxClusterSize int, tempDir string) (*Image
 		LabelsMapping: make(map[string][]string),
 	}
 
-	log.Printf("Creating directories at %s and %s", appCtx.ImageDir, appCtx.CacheDir)
-
 	rekogSvc, err := rekognition.NewRekognitionService("us-east-1", appCtx.CacheDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize RekognitionService: %v", err)
 	}
 
 	modelPath := "resnet50-v1-7.onnx"
-	log.Printf("Loading ResNet50 model from %s", modelPath)
 	net, err := embeddings.LoadPretrainedModelONNX(modelPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load ResNet50 ONNX model: %v", err)
@@ -64,187 +66,155 @@ func NewImageCluster(minClusterSize, maxClusterSize int, tempDir string) (*Image
 func (ic *ImageCluster) Run(uploadedImages []models.UploadedImage) (map[string]models.ClusterDetails, string, error) {
 	startTime := time.Now()
 	log.Println("Starting ImageCluster run...")
-	progress.Default.Broadcast("Starting clustering process...")
 
-	err := os.MkdirAll(ic.EmbeddingsModel.ImageDir, 0755)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to create image directory: %v", err)
+	if err := ic.createDirectories(); err != nil {
+		return nil, "", err
 	}
 
-	err = os.MkdirAll(ic.EmbeddingsModel.CacheDir, 0755)
+	itemDetails, err := ic.processImages(uploadedImages)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to create cache directory: %v", err)
+		return nil, "", err
 	}
 
-	log.Printf("Processing %d uploaded images", len(uploadedImages))
-	progress.Default.Broadcast(fmt.Sprintf("Processing %d images...", len(uploadedImages)))
+	err = embeddings.BuildLabelSet(getItemIDs(itemDetails), ic.RekognitionSvc, ic.EmbeddingsModel)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to build label set: %v", err)
+	}
 
-	productDetails := make([]models.CombinedProductDetails, len(uploadedImages))
-	productRefIDs := make([]string, len(uploadedImages))
+	embeddingsList, itemIDs, err := ic.createEmbeddings(itemDetails)
+	if err != nil {
+		return nil, "", err
+	}
+
+	clusters, success := clustering.PerformClusteringWithConstraints(
+		embeddingsList,
+		itemIDs,
+		ic.MinClusterSize,
+		ic.MaxClusterSize,
+	)
+	if !success {
+		return nil, "", fmt.Errorf("clustering failed")
+	}
+
+	clusterDetails := ic.prepareClusterDetails(clusters, itemDetails)
+
+	htmlOutputPath, err := utils.GenerateHTMLOutput(clusterDetails, ic.TempDir)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to generate HTML output: %v", err)
+	}
+
+	log.Printf("Completed clustering in %v", time.Since(startTime))
+	return clusterDetails, htmlOutputPath, nil
+}
+
+func (ic *ImageCluster) createDirectories() error {
+	dirs := []string{ic.EmbeddingsModel.ImageDir, ic.EmbeddingsModel.CacheDir}
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("failed to create directory %s: %v", dir, err)
+		}
+	}
+	return nil
+}
+
+func (ic *ImageCluster) processImages(uploadedImages []models.UploadedImage) ([]ItemDetails, error) {
+	itemDetails := make([]ItemDetails, len(uploadedImages))
 
 	for i, img := range uploadedImages {
 		imagePath := filepath.Join(ic.EmbeddingsModel.ImageDir, img.Filename)
-		err := os.WriteFile(imagePath, img.Data, 0644)
-		if err != nil {
-			return nil, "", fmt.Errorf("failed to save uploaded image %s: %v", img.Filename, err)
+		if err := os.WriteFile(imagePath, img.Data, 0644); err != nil {
+			return nil, fmt.Errorf("failed to save image %s: %v", img.Filename, err)
 		}
-		progress.Default.Broadcast(fmt.Sprintf("Saved image %d of %d", i+1, len(uploadedImages)))
 
-		progress.Default.Broadcast(fmt.Sprintf("Detecting labels for image %d of %d", i+1, len(uploadedImages)))
 		labels, err := ic.RekognitionSvc.DetectLabels(imagePath, 10, 75.0)
 		if err != nil {
-			return nil, "", fmt.Errorf("failed to detect labels for %s: %v", img.Filename, err)
+			return nil, fmt.Errorf("failed to detect labels for %s: %v", img.Filename, err)
 		}
 
 		labelNames := make([]string, len(labels))
 		for j, label := range labels {
 			labelNames[j] = *label.Name
 		}
-		log.Printf("Detected %d labels for image %s", len(labelNames), img.Filename)
 
-		productRefIDs[i] = fmt.Sprintf("img_%d", i)
-		productDetails[i] = models.CombinedProductDetails{
-			ProductReferenceID: productRefIDs[i],
-			ImagePath:          imagePath,
-			Labels:             labelNames,
+		itemDetails[i] = ItemDetails{
+			ID:        fmt.Sprintf("img_%d", i),
+			ImagePath: imagePath,
+			Labels:    labelNames,
 		}
 	}
 
-	progress.Default.Broadcast("Building label set from detected labels...")
-	err = embeddings.BuildLabelSet(productRefIDs, ic.RekognitionSvc, ic.EmbeddingsModel)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to build label set: %v", err)
-	}
-
-	progress.Default.Broadcast("Creating embeddings for all images...")
-	embeddingsList, productReferenceIDs, err := ic.CreateEmbeddingsForAllProducts(productDetails)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to create embeddings: %v", err)
-	}
-	log.Printf("Created embeddings for %d images", len(embeddingsList))
-
-	progress.Default.Broadcast("Performing clustering analysis...")
-	clusters, success := clustering.PerformClusteringWithConstraints(
-		embeddingsList,
-		productReferenceIDs,
-		ic.MinClusterSize,
-		ic.MaxClusterSize,
-	)
-	if !success {
-		return nil, "", fmt.Errorf("clustering failed due to constraints")
-	}
-	log.Printf("Formed %d clusters", len(clusters))
-	progress.Default.Broadcast(fmt.Sprintf("Successfully created %d clusters", len(clusters)))
-
-	progress.Default.Broadcast("Preparing cluster details...")
-	clusterDetails := ic.PrepareClusterDetails(clusters, productDetails)
-
-	progress.Default.Broadcast("Generating results page...")
-	htmlOutputPath, err := utils.GenerateHTMLOutput(clusterDetails, ic.TempDir)
-	if err != nil {
-		return nil, "", fmt.Errorf("failed to generate HTML output: %v", err)
-	}
-	log.Printf("Generated HTML output at: %s", htmlOutputPath)
-
-	duration := time.Since(startTime)
-	log.Printf("Total execution time: %v", duration)
-	progress.Default.Broadcast("Clustering complete! Redirecting to results...")
-
-	return clusterDetails, htmlOutputPath, nil
+	return itemDetails, nil
 }
 
-func (ic *ImageCluster) CreateEmbeddingsForAllProducts(productDetails []models.CombinedProductDetails) ([][]float32, []string, error) {
-	embeddingsList := make([][]float32, len(productDetails))
-	productReferenceIDs := make([]string, len(productDetails))
+func (ic *ImageCluster) createEmbeddings(items []ItemDetails) ([][]float32, []string, error) {
+	embeddingsList := make([][]float32, len(items))
+	itemIDs := make([]string, len(items))
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-	errChan := make(chan error, len(productDetails))
+	errChan := make(chan error, len(items))
 
-	log.Printf("Creating embeddings for %d products concurrently", len(productDetails))
-
-	for i, product := range productDetails {
+	for i, item := range items {
 		wg.Add(1)
-		go func(idx int, pd models.CombinedProductDetails) {
+		go func(idx int, item ItemDetails) {
 			defer wg.Done()
 
-			log.Printf("Generating embedding for product %s", pd.ProductReferenceID)
-			imageEmbedding, err := embeddings.GetImageEmbedding(ic.EmbeddingsModel, pd.ImagePath)
+			imageEmbedding, err := embeddings.GetImageEmbedding(ic.EmbeddingsModel, item.ImagePath)
 			if err != nil {
-				errChan <- fmt.Errorf("failed to generate image embedding for %s: %v", pd.ProductReferenceID, err)
+				errChan <- fmt.Errorf("failed to generate embedding for %s: %v", item.ID, err)
 				return
 			}
 
-			labelVector := embeddings.GenerateLabelVector(pd.Labels, ic.EmbeddingsModel.LabelSet)
+			labelVector := embeddings.GenerateLabelVector(item.Labels, ic.EmbeddingsModel.LabelSet)
 			combinedEmbedding := embeddings.CombineEmbeddings(imageEmbedding, labelVector)
 
 			mu.Lock()
 			embeddingsList[idx] = combinedEmbedding
-			productReferenceIDs[idx] = pd.ProductReferenceID
+			itemIDs[idx] = item.ID
 			mu.Unlock()
-
-			log.Printf("Successfully created embedding for product %s", pd.ProductReferenceID)
-		}(i, product)
+		}(i, item)
 	}
 
 	wg.Wait()
 	close(errChan)
 
-	// Check for any errors that occurred during embedding generation
-	for err := range errChan {
-		if err != nil {
-			log.Printf("Error during embedding generation: %v", err)
-			return nil, nil, err
-		}
+	if err := <-errChan; err != nil {
+		return nil, nil, err
 	}
 
-	return embeddingsList, productReferenceIDs, nil
+	return embeddingsList, itemIDs, nil
 }
 
-func (ic *ImageCluster) PrepareClusterDetails(clusters map[int][]string, productDetails []models.CombinedProductDetails) map[string]models.ClusterDetails {
+func (ic *ImageCluster) prepareClusterDetails(clusters map[int][]string, items []ItemDetails) map[string]models.ClusterDetails {
 	clusterDetails := make(map[string]models.ClusterDetails)
-	log.Printf("Preparing details for %d clusters", len(clusters))
+	itemMap := makeItemMap(items)
 
-	for clusterID, products := range clusters {
+	for clusterID, itemIDs := range clusters {
 		clusterKey := fmt.Sprintf("Cluster-%d", clusterID)
-		log.Printf("Processing %s with %d products", clusterKey, len(products))
-
-		details := models.NewClusterDetails()
-		details.ProductReferenceIDs = products
+		var details models.ClusterDetails
+		details = details.Init()
 
 		labelsSet := make(map[string]struct{})
 		var images []string
 
-		for _, pid := range details.ProductReferenceIDs {
-			product := models.ProductDetailsMap(pid, productDetails)
-			if product != nil {
-				for _, label := range product.Labels {
+		for _, id := range itemIDs {
+			if item, exists := itemMap[id]; exists {
+				for _, label := range item.Labels {
 					labelsSet[label] = struct{}{}
 				}
-				if product.ImagePath != "" {
-					imageFilename := filepath.Base(product.ImagePath)
-					images = append(images, imageFilename)
-				}
+				images = append(images, filepath.Base(item.ImagePath))
 			}
 		}
 
-		labelsList := make([]string, 0, len(labelsSet))
-		for label := range labelsSet {
-			labelsList = append(labelsList, label)
-		}
-		aggregatedLabels := strings.Join(labelsList, ", ")
-		details.Labels = aggregatedLabels
+		details.Labels = formatLabels(labelsSet)
 		details.Images = images
 
-		log.Printf("Generating AI service outputs for %s", clusterKey)
-		modelOutputs := ai.GenerateTitleAndCatchyPhraseMultiService(aggregatedLabels, 3)
-
+		modelOutputs := ai.GenerateTitleAndCatchyPhraseMultiService(details.Labels, 3)
 		for _, output := range modelOutputs {
-			serviceOutput := models.ServiceOutput{
+			details.SetServiceOutput(models.ServiceOutput{
 				ServiceName:  output.ServiceName,
 				Title:        output.Title,
 				CatchyPhrase: output.CatchyPhrase,
-			}
-			details.SetServiceOutput(serviceOutput)
+			})
 
 			if output.ServiceName == "Claude 3" {
 				details.Title = output.Title
@@ -253,16 +223,31 @@ func (ic *ImageCluster) PrepareClusterDetails(clusters map[int][]string, product
 		}
 
 		clusterDetails[clusterKey] = details
-		log.Printf("Completed processing for %s", clusterKey)
 	}
 
 	return clusterDetails
 }
 
-func getProductRefIDs(productDetails []models.CombinedProductDetails) []string {
-	productRefIDs := make([]string, len(productDetails))
-	for i, pd := range productDetails {
-		productRefIDs[i] = pd.ProductReferenceID
+func makeItemMap(items []ItemDetails) map[string]ItemDetails {
+	itemMap := make(map[string]ItemDetails)
+	for _, item := range items {
+		itemMap[item.ID] = item
 	}
-	return productRefIDs
+	return itemMap
+}
+
+func formatLabels(labelsSet map[string]struct{}) string {
+	labels := make([]string, 0, len(labelsSet))
+	for label := range labelsSet {
+		labels = append(labels, label)
+	}
+	return strings.Join(labels, ", ")
+}
+
+func getItemIDs(items []ItemDetails) []string {
+	ids := make([]string, len(items))
+	for i, item := range items {
+		ids[i] = item.ID
+	}
+	return ids
 }

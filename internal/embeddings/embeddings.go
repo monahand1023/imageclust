@@ -19,7 +19,7 @@ type AppContext struct {
 	CacheDir      string              // Cache directory for storing embeddings
 	LabelSet      map[string]int      // Set of all possible labels for encoding
 	Mutex         sync.Mutex          // To handle concurrent access to shared resources
-	LabelsMapping map[string][]string // Map of productRefID -> labels
+	LabelsMapping map[string][]string // Map of image -> labels
 	Net           gocv.Net            // OpenCV DNN network for ResNet50
 	NetMutex      sync.Mutex
 }

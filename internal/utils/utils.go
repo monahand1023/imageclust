@@ -161,15 +161,14 @@ func GenerateHTMLOutput(clusters map[string]models.ClusterDetails, tempDir strin
                     </tbody>
                 </table>
 
-                <div class="image-container">
-                    {{range $index, $image := $cluster_info.Images}}
+				 <div class="image-container">
+                    {{range $image := $cluster_info.Images}}
                         <div class="image">
                             <img src="/api/image/{{$image}}" alt="Cluster image">
-                            <p class="product-id">ID: {{ index $cluster_info.ProductReferenceIDs $index }}</p>
                         </div>
                     {{end}}
                 </div>
-            </div>
+			</div>
         {{end}}
     </div>
 </body>

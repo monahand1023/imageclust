@@ -2,9 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
-	"fmt"
 	"imageclust/internal/models"
-	"imageclust/internal/progress"
 	"io"
 	"log"
 	"net/http"
@@ -213,40 +211,4 @@ func (h SpaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.FileServer(http.Dir(h.StaticPath)).ServeHTTP(w, r)
-}
-
-func ProgressHandler(w http.ResponseWriter, r *http.Request) {
-	log.Println("Progress handler started")
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		log.Println("Streaming not supported")
-		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
-		return
-	}
-
-	progressChan := make(chan string)
-	progress.Default.Register(progressChan)
-	log.Println("Client registered for progress updates")
-
-	defer func() {
-		progress.Default.Unregister(progressChan)
-		log.Println("Client unregistered from progress updates")
-	}()
-
-	for {
-		select {
-		case msg := <-progressChan:
-			log.Printf("Sending progress: %s", msg)
-			fmt.Fprintf(w, "data: %s\n\n", msg)
-			flusher.Flush()
-		case <-r.Context().Done():
-			log.Println("Client connection closed")
-			return
-		}
-	}
 }
