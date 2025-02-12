@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -15,15 +14,24 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 )
 
-// ClaudeHaikuRequest represents the structure expected by Claude Haiku
-type ClaudeHaikuRequest struct {
-	Prompt            string `json:"prompt"`
-	MaxTokensToSample int    `json:"max_tokens_to_sample"`
+// Claude3Request represents the structure expected by Claude 3
+type Claude3Request struct {
+	AnthropicVersion string    `json:"anthropic_version"`
+	Messages         []Message `json:"messages"`
+	MaxTokens        int       `json:"max_tokens"`
+	Temperature      float32   `json:"temperature"`
 }
 
-// ClaudeHaikuResponse represents the structure of the response from Claude 2.1
-type ClaudeHaikuResponse struct {
-	Completion string `json:"completion"`
+type Message struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// Claude3Response represents the structure of the response from Claude 3
+type Claude3Response struct {
+	Content []struct {
+		Text string `json:"text"`
+	} `json:"content"`
 }
 
 // BedrockClient implements the AIClient interface using AWS Bedrock's Claude
@@ -49,21 +57,24 @@ func (b *BedrockClient) GenerateTitleAndCatchyPhrase(aggregatedText string, retr
 	sanitizedText := truncateAndSanitize(aggregatedText, 1000)
 
 	for attempt := 0; attempt < retries; attempt++ {
-		prompt := fmt.Sprintf(`Human: You are an assistant that generates concise and creative titles and catchy phrases for product clusters.
+		// Create the request body using the Messages format
+		requestBody := Claude3Request{
+			AnthropicVersion: "bedrock-2023-05-31",
+			Messages: []Message{
+				{
+					Role: "user",
+					Content: fmt.Sprintf(`You are an assistant that generates concise and creative titles and catchy phrases for product clusters.
 Each title must be no more than 25 characters, and each catchy phrase must be no more than 100 characters. 
 Use first-person voice; avoid using 'we' and express using 'I' or 'my'. 
 Return the results in JSON format with the fields 'title' and 'catchy_phrase' only.
-Do not include any Markdown or code block formatting in your response.
-Ensure that only one JSON object is returned.
+Do not include any extra text, markdown, or code block formatting in your response.
+Ensure that only the JSON object is returned.
 
-Features: %s.
-
-Assistant:`, sanitizedText)
-
-		// Create the request body
-		requestBody := ClaudeHaikuRequest{
-			Prompt:            prompt,
-			MaxTokensToSample: 500,
+Features: %s.`, sanitizedText),
+				},
+			},
+			MaxTokens:   100,
+			Temperature: 0.7,
 		}
 
 		// Marshal the request body
@@ -74,12 +85,12 @@ Assistant:`, sanitizedText)
 		}
 
 		// Log the request being sent to Claude
-		log.Println("Sending request to Claude Haiku v3.5 via Bedrock:")
+		log.Println("Sending request to Claude 3.5 Haiku via Bedrock:")
 		log.Println(string(requestData))
 
 		// Create the Bedrock invoke request
 		input := &bedrockruntime.InvokeModelInput{
-			ModelId:     aws.String("anthropic.claude-3-5-haiku-20241022-v1:0"),
+			ModelId:     aws.String("anthropic.claude-3-haiku-20240307-v1:0"),
 			Body:        requestData,
 			ContentType: aws.String("application/json"),
 			Accept:      aws.String("application/json"),
@@ -94,7 +105,7 @@ Assistant:`, sanitizedText)
 		}
 
 		// Parse the response
-		var claudeResp ClaudeHaikuResponse
+		var claudeResp Claude3Response
 		err = json.Unmarshal(output.Body, &claudeResp)
 		if err != nil {
 			log.Printf("Error unmarshaling Claude response: %v", err)
@@ -102,33 +113,24 @@ Assistant:`, sanitizedText)
 			continue
 		}
 
-		// After receiving the completionText from Claude
-		completionText := claudeResp.Completion
-
-		// Log the response received from Claude
-		log.Println("Received response from Claude:")
-		log.Println(completionText)
-
-		// Use regular expressions to extract the JSON code block
-		re := regexp.MustCompile("(?s)```json\\s*(\\{.*?\\})\\s*```")
-		matches := re.FindStringSubmatch(completionText)
-
-		if len(matches) < 2 {
-			log.Println("No JSON code block found in Claude response")
+		// Make sure we have content in the response
+		if len(claudeResp.Content) == 0 {
+			log.Println("Empty response from Claude")
 			time.Sleep(2 * time.Second)
 			continue
 		}
 
-		jsonContent := matches[1]
-		jsonContent = strings.TrimSpace(jsonContent)
-		log.Println("Extracted JSON content:")
-		log.Println(jsonContent)
+		responseText := claudeResp.Content[0].Text
 
-		// Parse the JSON from the extracted content
+		// Log the response received from Claude
+		log.Println("Received response from Claude:")
+		log.Println(responseText)
+
+		// Attempt to parse the response as JSON
 		var result map[string]string
-		err = json.Unmarshal([]byte(jsonContent), &result)
+		err = json.Unmarshal([]byte(responseText), &result)
 		if err != nil {
-			log.Printf("Error unmarshaling completion JSON: %v", err)
+			log.Printf("Error unmarshaling response JSON: %v", err)
 			time.Sleep(2 * time.Second)
 			continue
 		}
@@ -149,7 +151,6 @@ Assistant:`, sanitizedText)
 	return "No Title", "No phrase available"
 }
 
-// truncateAndSanitize truncates the input string to a maximum length and removes or replaces problematic characters
 func truncateAndSanitize(input string, maxLen int) string {
 	if utf8.RuneCountInString(input) > maxLen {
 		truncated := []rune(input)[:maxLen]

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/gorilla/mux"
@@ -152,23 +153,37 @@ func ViewHandler(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, htmlFilePath)
 }
 
-// ImageHandler serves images directly from tempDir/images/
+// ImageHandler serves images from the temporary directory
 func ImageHandler(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	imageName := utils.SanitizeFilename(vars["imageName"])
+
 	tempDir := GetTempDir()
 	if tempDir == "" {
 		http.Error(w, "No images available", http.StatusNotFound)
 		return
 	}
-	vars := mux.Vars(r)
-	imageName := vars["imageName"]
 
 	imagesDir := filepath.Join(tempDir, "images")
 	imagePath := filepath.Join(imagesDir, imageName)
 
 	if _, err := os.Stat(imagePath); os.IsNotExist(err) {
+		log.Printf("Image not found: %s", imagePath)
 		http.Error(w, "Image not found", http.StatusNotFound)
 		return
 	}
+
+	ext := strings.ToLower(filepath.Ext(imageName))
+	contentType := "image/jpeg"
+	switch ext {
+	case ".png":
+		contentType = "image/png"
+	case ".gif":
+		contentType = "image/gif"
+	case ".webp":
+		contentType = "image/webp"
+	}
+	w.Header().Set("Content-Type", contentType)
 
 	http.ServeFile(w, r, imagePath)
 }
@@ -197,25 +212,18 @@ func respondWithJSON(w http.ResponseWriter, code int, payload map[string]interfa
 // ServeHTTP handles all requests by attempting to serve static files first,
 // and falling back to serving index.html for any non-file routes
 func (h SpaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path, err := filepath.Abs(r.URL.Path)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	// Serve /view route
+	if r.URL.Path == "/view" {
+		ViewHandler(w, r)
 		return
 	}
 
-	path = filepath.Join(h.StaticPath, path)
-
-	_, err = os.Stat(path)
+	// Handle all other routes
+	path := filepath.Join(h.StaticPath, r.URL.Path)
+	_, err := os.Stat(path)
 	if os.IsNotExist(err) {
-		// File doesn't exist, serve index.html
-		indexPath := filepath.Join(h.StaticPath, h.IndexPath)
-		http.ServeFile(w, r, indexPath)
-		return
-	} else if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.ServeFile(w, r, filepath.Join(h.StaticPath, h.IndexPath))
 		return
 	}
-
-	// Serve the static file
 	http.FileServer(http.Dir(h.StaticPath)).ServeHTTP(w, r)
 }

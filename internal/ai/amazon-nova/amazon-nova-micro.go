@@ -35,7 +35,7 @@ func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, s
 	client := bedrockruntime.NewFromConfig(cfg)
 
 	// Define the Bedrock model ID you want to use
-	modelID := "amazon.nova-micro-v1:0"
+	modelID := "arn:aws:bedrock:us-west-2:224418580241:inference-profile/us.amazon.nova-micro-v1:0"
 
 	// Truncate and sanitize aggregatedText
 	sanitizedText := truncateAndSanitize(aggregatedText, 1000)

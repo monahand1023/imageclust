@@ -16,12 +16,15 @@ import (
 
 // Claude3Request represents the structure expected by Claude 3
 type Claude3Request struct {
-	AnthropicVersion string `json:"anthropic_version"`
-	Messages         []struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
-	} `json:"messages"`
-	MaxTokens int `json:"max_tokens"`
+	AnthropicVersion string    `json:"anthropic_version"`
+	Messages         []Message `json:"messages"`
+	MaxTokens        int       `json:"max_tokens"`
+	Temperature      float32   `json:"temperature"`
+}
+
+type Message struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 // Claude3Response represents the structure of the response from Claude 3
@@ -54,28 +57,24 @@ func (b *BedrockClient) GenerateTitleAndCatchyPhrase(aggregatedText string, retr
 	sanitizedText := truncateAndSanitize(aggregatedText, 1000)
 
 	for attempt := 0; attempt < retries; attempt++ {
-		prompt := fmt.Sprintf(`You are an assistant that generates concise and creative titles and catchy phrases for product clusters.
+		// Create the request body using the Messages format
+		requestBody := Claude3Request{
+			AnthropicVersion: "bedrock-2023-05-31",
+			Messages: []Message{
+				{
+					Role: "user",
+					Content: fmt.Sprintf(`You are an assistant that generates concise and creative titles and catchy phrases for product clusters.
 Each title must be no more than 25 characters, and each catchy phrase must be no more than 100 characters. 
 Use first-person voice; avoid using 'we' and express using 'I' or 'my'. 
 Return the results in JSON format with the fields 'title' and 'catchy_phrase' only.
 Do not include any extra text, markdown, or code block formatting in your response.
 Ensure that only the JSON object is returned.
 
-Features: %s.`, sanitizedText)
-
-		// Create the request body
-		requestBody := Claude3Request{
-			AnthropicVersion: "amazon-nova-2023-05-31",
-			Messages: []struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
-			}{
-				{
-					Role:    "user",
-					Content: prompt,
+Features: %s.`, sanitizedText),
 				},
 			},
-			MaxTokens: 100,
+			MaxTokens:   100,
+			Temperature: 0.7,
 		}
 
 		// Marshal the request body
@@ -86,12 +85,12 @@ Features: %s.`, sanitizedText)
 		}
 
 		// Log the request being sent to Claude
-		log.Println("Sending request to Claude Sonnet v3.5 via Bedrock:")
+		log.Println("Sending request to Claude 3.5 Sonnet via Bedrock:")
 		log.Println(string(requestData))
 
 		// Create the Bedrock invoke request
 		input := &bedrockruntime.InvokeModelInput{
-			ModelId:     aws.String("anthropic.claude-3-5-sonnet-20241022-v2:0"),
+			ModelId:     aws.String("anthropic.claude-3-sonnet-20240229-v1:0"),
 			Body:        requestData,
 			ContentType: aws.String("application/json"),
 			Accept:      aws.String("application/json"),
@@ -152,7 +151,6 @@ Features: %s.`, sanitizedText)
 	return "No Title", "No phrase available"
 }
 
-// truncateAndSanitize truncates the input string to a maximum length and removes or replaces problematic characters
 func truncateAndSanitize(input string, maxLen int) string {
 	if utf8.RuneCountInString(input) > maxLen {
 		truncated := []rune(input)[:maxLen]

@@ -13,16 +13,19 @@ func main() {
 	router.Use(handlers.EnableCORS)
 
 	// API routes
-	router.HandleFunc("/api/cluster", handlers.ClusterAndGenerateHandler).Methods("POST")
-	router.HandleFunc("/api/image/{imageName}", handlers.ImageHandler).Methods("GET")
+	apiRouter := router.PathPrefix("/api").Subrouter()
+	apiRouter.HandleFunc("/cluster", handlers.ClusterAndGenerateHandler).Methods("POST")
+	apiRouter.HandleFunc("/image/{imageName:.*}", handlers.ImageHandler).Methods("GET")
+
+	// View route
 	router.HandleFunc("/view", handlers.ViewHandler).Methods("GET")
 
-	// Serve frontend
-	spa := handlers.SpaHandler{StaticPath: "frontend/build", IndexPath: "index.html"}
-	router.PathPrefix("/").Handler(spa)
+	// Serve frontend static files
+	router.PathPrefix("/").Handler(http.FileServer(http.Dir("frontend/build")))
 
 	serverAddress := ":8080"
 	log.Printf("Starting server on %s", serverAddress)
+	log.Printf("View results at http://localhost%s/view", serverAddress)
 
 	err := http.ListenAndServe(serverAddress, router)
 	if err != nil {

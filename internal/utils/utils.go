@@ -3,14 +3,21 @@ package utils
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"imageclust/internal/models"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 )
+
+type ClusterDownload struct {
+	Title        string   `json:"title"`
+	CatchyPhrase string   `json:"catchyPhrase"`
+	Images       []string `json:"images"`
+	Labels       string   `json:"labels"`
+}
 
 // GenerateHTMLOutput generates an HTML file based on cluster details.
 func GenerateHTMLOutput(clusters map[string]models.ClusterDetails, tempDir string) (string, error) {
@@ -69,7 +76,7 @@ func GenerateHTMLOutput(clusters map[string]models.ClusterDetails, tempDir strin
             height: auto;
             border-radius: 4px;
         }
-        .submit-button {
+        .download-button {
             background-color: #4CAF50;
             color: white;
             padding: 8px 16px;
@@ -79,7 +86,7 @@ func GenerateHTMLOutput(clusters map[string]models.ClusterDetails, tempDir strin
             transition: background-color 0.3s;
             font-size: 0.9em;
         }
-        .submit-button:hover {
+        .download-button:hover {
             background-color: #45a049;
         }
         .labels {
@@ -100,34 +107,23 @@ func GenerateHTMLOutput(clusters map[string]models.ClusterDetails, tempDir strin
         }
     </style>
     <script>
-        async function publishCluster(clusterId, title, catchyPhrase, productReferenceIds, modelName) {
-            const payload = {
-                cluster_id: clusterId,
+        async function downloadCluster(clusterId, title, catchyPhrase, images, labels) {
+            const clusterData = {
                 title: title,
-                description: catchyPhrase,
-                product_reference_ids: productReferenceIds,
-                model_name: modelName
+                catchyPhrase: catchyPhrase,
+                images: images,
+                labels: labels
             };
-
-            try {
-                const response = await fetch("/publish", {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify(payload)
-                });
-
-                const data = await response.json();
-                if (data.success) {
-                    alert("Cluster published successfully using " + modelName + "!");
-                } else {
-                    alert("Failed to publish cluster: " + data.error);
-                }
-            } catch (error) {
-                console.error("Error:", error);
-                alert("An error occurred while publishing the cluster.");
-            }
+            
+            const blob = new Blob([JSON.stringify(clusterData, null, 2)], { type: 'application/json' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'cluster-' + clusterId + '.json';
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
         }
     </script>
 </head>
@@ -156,8 +152,8 @@ func GenerateHTMLOutput(clusters map[string]models.ClusterDetails, tempDir strin
                                 <td>{{ $output.Title }}</td>
                                 <td>{{ $output.CatchyPhrase }}</td>
                                 <td>
-                                    <button onclick="publishCluster('{{ $cluster_id }}', '{{ escapeJS $output.Title }}', '{{ escapeJS $output.CatchyPhrase }}', [{{range $i, $id := $cluster_info.ProductReferenceIDs}}'{{ $id }}'{{if ne (add $i 1) (len $cluster_info.ProductReferenceIDs)}}, {{end}}{{end}}], '{{ $output.ServiceName }}')" class="submit-button">
-                                        Publish
+                                    <button onclick="downloadCluster('{{ $cluster_id }}', '{{ escapeJS $output.Title }}', '{{ escapeJS $output.CatchyPhrase }}', {{escapeJS (toJSON $cluster_info.Images)}}, '{{ escapeJS $cluster_info.Labels }}')" class="download-button">
+                                        Download Cluster
                                     </button>
                                 </td>
                             </tr>
@@ -168,7 +164,7 @@ func GenerateHTMLOutput(clusters map[string]models.ClusterDetails, tempDir strin
                 <div class="image-container">
                     {{range $index, $image := $cluster_info.Images}}
                         <div class="image">
-                            <img src="/image/{{ $image }}" alt="Product Image">
+                            <img src="/api/image/{{$image}}" alt="Cluster image">
                             <p class="product-id">ID: {{ index $cluster_info.ProductReferenceIDs $index }}</p>
                         </div>
                     {{end}}
@@ -183,6 +179,7 @@ func GenerateHTMLOutput(clusters map[string]models.ClusterDetails, tempDir strin
 	funcMap := template.FuncMap{
 		"escapeJS": escapeJS,
 		"add":      add,
+		"toJSON":   toJSON,
 	}
 
 	// Parse the template with the custom functions
@@ -196,17 +193,6 @@ func GenerateHTMLOutput(clusters map[string]models.ClusterDetails, tempDir strin
 		Clusters map[string]models.ClusterDetails
 	}{
 		Clusters: clusters,
-	}
-
-	// Log the data being sent to the template
-	log.Println("Preparing data for HTML template:")
-	for clusterID, cluster := range data.Clusters {
-		log.Printf("Cluster ID: %s", clusterID)
-		log.Printf("  Title: %s", cluster.Title)
-		log.Printf("  Catchy Phrase: %s", cluster.CatchyPhrase)
-		log.Printf("  Labels: %s", cluster.Labels)
-		log.Printf("  Images: %v", cluster.Images)
-		log.Printf("  Product Reference IDs: %v", cluster.ProductReferenceIDs)
 	}
 
 	// Execute the template into a buffer
@@ -225,30 +211,34 @@ func GenerateHTMLOutput(clusters map[string]models.ClusterDetails, tempDir strin
 		return "", fmt.Errorf("failed to write HTML file: %v", err)
 	}
 
-	// Log the location of the generated HTML file
-	log.Printf("HTML file generated successfully at: %s", outputFile)
-
-	// Return the path to the HTML file
 	return outputFile, nil
 }
 
 // Helper functions
-
-// escapeJS escapes single quotes and backslashes for safe inclusion in JavaScript strings
-func escapeJS(s string) string {
-	s = strings.ReplaceAll(s, "\\", "\\\\")
-	s = strings.ReplaceAll(s, "'", "\\'")
-	return s
+func escapeJS(s interface{}) string {
+	switch v := s.(type) {
+	case string:
+		v = strings.ReplaceAll(v, "\\", "\\\\")
+		v = strings.ReplaceAll(v, "'", "\\'")
+		return v
+	default:
+		return ""
+	}
 }
 
-// add is a helper function to add two integers
+func toJSON(v interface{}) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
 func add(a, b int) int {
 	return a + b
 }
 
-// SanitizeFilename replaces invalid characters in filenames
 func SanitizeFilename(name string) string {
-	// Replace any character that is not a letter, number, dot, or dash with an underscore
 	return strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') ||
 			(r >= 'A' && r <= 'Z') ||
@@ -260,12 +250,10 @@ func SanitizeFilename(name string) string {
 	}, name)
 }
 
-// URLEncode encodes a string for safe inclusion in URLs
 func URLEncode(s string) string {
 	return strings.ReplaceAll(s, " ", "%20")
 }
 
-// CleanText performs basic text cleaning, such as removing extra spaces and trimming.
 func CleanText(text string) string {
 	return strings.TrimSpace(text)
 }
