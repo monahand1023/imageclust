@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"os"
 	"path/filepath"
 
@@ -25,8 +26,33 @@ type RekognitionService struct {
 // - region: AWS region (e.g., "us-east-1").
 // - cacheDir: Directory path where cached labels will be stored.
 func NewRekognitionService(region, cacheDir string) (*RekognitionService, error) {
-	// Load AWS configuration
-	cfg, err := config.LoadDefaultConfig(context.TODO(), config.WithRegion(region))
+	var cfg aws.Config
+	var err error
+
+	if os.Getenv("DEV_MODE") == "true" {
+		// Load static credentials from environment variables for development
+		accessKey := os.Getenv("AWS_ACCESS_KEY_ID")
+		secretKey := os.Getenv("AWS_SECRET_ACCESS_KEY")
+
+		if accessKey == "" || secretKey == "" {
+			return nil, fmt.Errorf("AWS credentials not found in environment variables")
+		}
+
+		cfg, err = config.LoadDefaultConfig(context.TODO(),
+			config.WithRegion(region),
+			config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+				accessKey,
+				secretKey,
+				"",
+			)),
+		)
+	} else {
+		// Load default AWS configuration for production
+		cfg, err = config.LoadDefaultConfig(context.TODO(),
+			config.WithRegion(region),
+		)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("unable to load AWS SDK config: %v", err)
 	}
