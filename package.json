@@ -1,0 +1,15 @@
+{
+  "name": "imageclust",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "proxy": "http://localhost:8080/",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/monahand1023/imageclust.git"
+  },
+  "private": true
+}

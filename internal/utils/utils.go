@@ -129,7 +129,7 @@ func GenerateHTMLOutput(clusters map[string]models.ClusterDetails, tempDir strin
 </head>
 <body>
     <div class="container">
-        <h1>Model Comparison - Clustered Fashion Items</h1>
+        <h1>Model Comparison</h1>
         {{range $cluster_id, $cluster_info := .Clusters}}
             <div class="cluster">
                 <div class="labels">
@@ -203,7 +203,7 @@ func GenerateHTMLOutput(clusters map[string]models.ClusterDetails, tempDir strin
 	}
 
 	// Define the output HTML file path
-	outputFile := filepath.Join(tempDir, "clustered_fashion_items.html")
+	outputFile := filepath.Join(tempDir, "clusters.html")
 
 	// Write the buffer to the HTML file
 	err = os.WriteFile(outputFile, buf.Bytes(), 0644)

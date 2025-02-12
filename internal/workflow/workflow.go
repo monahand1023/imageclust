@@ -6,6 +6,7 @@ import (
 	"imageclust/internal/clustering"
 	"imageclust/internal/embeddings"
 	"imageclust/internal/models"
+	"imageclust/internal/progress"
 	"imageclust/internal/rekognition"
 	"imageclust/internal/utils"
 	"log"
@@ -63,6 +64,7 @@ func NewImageCluster(minClusterSize, maxClusterSize int, tempDir string) (*Image
 func (ic *ImageCluster) Run(uploadedImages []models.UploadedImage) (map[string]models.ClusterDetails, string, error) {
 	startTime := time.Now()
 	log.Println("Starting ImageCluster run...")
+	progress.Default.Broadcast("Starting clustering process...")
 
 	err := os.MkdirAll(ic.EmbeddingsModel.ImageDir, 0755)
 	if err != nil {
@@ -75,6 +77,8 @@ func (ic *ImageCluster) Run(uploadedImages []models.UploadedImage) (map[string]m
 	}
 
 	log.Printf("Processing %d uploaded images", len(uploadedImages))
+	progress.Default.Broadcast(fmt.Sprintf("Processing %d images...", len(uploadedImages)))
+
 	productDetails := make([]models.CombinedProductDetails, len(uploadedImages))
 	productRefIDs := make([]string, len(uploadedImages))
 
@@ -84,8 +88,9 @@ func (ic *ImageCluster) Run(uploadedImages []models.UploadedImage) (map[string]m
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to save uploaded image %s: %v", img.Filename, err)
 		}
-		log.Printf("Saved image %s to %s", img.Filename, imagePath)
+		progress.Default.Broadcast(fmt.Sprintf("Saved image %d of %d", i+1, len(uploadedImages)))
 
+		progress.Default.Broadcast(fmt.Sprintf("Detecting labels for image %d of %d", i+1, len(uploadedImages)))
 		labels, err := ic.RekognitionSvc.DetectLabels(imagePath, 10, 75.0)
 		if err != nil {
 			return nil, "", fmt.Errorf("failed to detect labels for %s: %v", img.Filename, err)
@@ -105,21 +110,20 @@ func (ic *ImageCluster) Run(uploadedImages []models.UploadedImage) (map[string]m
 		}
 	}
 
-	// Build label set using the actual files in the directory
-	log.Println("Building label set from detected labels")
+	progress.Default.Broadcast("Building label set from detected labels...")
 	err = embeddings.BuildLabelSet(productRefIDs, ic.RekognitionSvc, ic.EmbeddingsModel)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to build label set: %v", err)
 	}
 
-	log.Println("Creating embeddings for all images")
+	progress.Default.Broadcast("Creating embeddings for all images...")
 	embeddingsList, productReferenceIDs, err := ic.CreateEmbeddingsForAllProducts(productDetails)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to create embeddings: %v", err)
 	}
 	log.Printf("Created embeddings for %d images", len(embeddingsList))
 
-	log.Println("Performing clustering")
+	progress.Default.Broadcast("Performing clustering analysis...")
 	clusters, success := clustering.PerformClusteringWithConstraints(
 		embeddingsList,
 		productReferenceIDs,
@@ -130,18 +134,22 @@ func (ic *ImageCluster) Run(uploadedImages []models.UploadedImage) (map[string]m
 		return nil, "", fmt.Errorf("clustering failed due to constraints")
 	}
 	log.Printf("Formed %d clusters", len(clusters))
+	progress.Default.Broadcast(fmt.Sprintf("Successfully created %d clusters", len(clusters)))
 
-	log.Println("Preparing cluster details")
+	progress.Default.Broadcast("Preparing cluster details...")
 	clusterDetails := ic.PrepareClusterDetails(clusters, productDetails)
 
-	log.Println("Generating HTML output")
+	progress.Default.Broadcast("Generating results page...")
 	htmlOutputPath, err := utils.GenerateHTMLOutput(clusterDetails, ic.TempDir)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to generate HTML output: %v", err)
 	}
 	log.Printf("Generated HTML output at: %s", htmlOutputPath)
 
-	log.Printf("Total execution time: %v", time.Since(startTime))
+	duration := time.Since(startTime)
+	log.Printf("Total execution time: %v", duration)
+	progress.Default.Broadcast("Clustering complete! Redirecting to results...")
+
 	return clusterDetails, htmlOutputPath, nil
 }
 

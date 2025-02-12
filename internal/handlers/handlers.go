@@ -2,7 +2,9 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"imageclust/internal/models"
+	"imageclust/internal/progress"
 	"io"
 	"log"
 	"net/http"
@@ -27,6 +29,9 @@ var (
 	currentTempDir string
 	tempDirMutex   sync.RWMutex
 )
+
+func init() {
+}
 
 // SetTempDir sets the current temp directory in a thread-safe way.
 func SetTempDir(dir string) {
@@ -60,46 +65,36 @@ func EnableCORS(next http.Handler) http.Handler {
 
 // ClusterAndGenerateHandler processes uploaded images and generates clusters
 func ClusterAndGenerateHandler(w http.ResponseWriter, r *http.Request) {
-	log.Println("Route /cluster_and_generate was called")
-
 	if r.Method != http.MethodPost {
 		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
 		return
 	}
 
-	err := r.ParseMultipartForm(32 << 20) // 32MB max memory
+	err := r.ParseMultipartForm(32 << 20)
 	if err != nil {
-		log.Printf("Error parsing multipart form: %v", err)
-		http.Error(w, "Failed to parse multipart form data", http.StatusBadRequest)
+		respondWithError(w, http.StatusBadRequest, "Failed to parse form data")
 		return
 	}
 
-	// Create a temporary directory
 	tempDir, err := os.MkdirTemp("", "imagecluster_*")
 	if err != nil {
-		log.Printf("Failed to create temporary directory: %v", err)
-		http.Error(w, "Failed to create temporary directory.", http.StatusInternalServerError)
+		respondWithError(w, http.StatusInternalServerError, "Failed to create temporary directory")
 		return
 	}
-	log.Printf("Temporary directory created at: %s", tempDir)
 
-	// Set the temp directory globally for image serving
 	SetTempDir(tempDir)
 
-	// Process uploaded images
 	uploadedImages := []models.UploadedImage{}
 	files := r.MultipartForm.File["images"]
 	for _, fileHeader := range files {
 		file, err := fileHeader.Open()
 		if err != nil {
-			log.Printf("Error opening uploaded file: %v", err)
 			continue
 		}
 		defer file.Close()
 
 		data, err := io.ReadAll(file)
 		if err != nil {
-			log.Printf("Error reading uploaded file: %v", err)
 			continue
 		}
 
@@ -111,35 +106,27 @@ func ClusterAndGenerateHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(uploadedImages) == 0 {
-		http.Error(w, "No valid images uploaded", http.StatusBadRequest)
+		respondWithError(w, http.StatusBadRequest, "No valid images uploaded")
 		return
 	}
 
-	// Initialize imagecluster with hardcoded cluster sizes
-	imagecluster, err := workflow.NewImageCluster(
-		3, // Hardcoded minimum cluster size
-		6, // Hardcoded maximum cluster size
-		tempDir,
-	)
+	imagecluster, err := workflow.NewImageCluster(3, 6, tempDir)
 	if err != nil {
-		log.Printf("Failed to initialize ImageCluster: %v", err)
-		http.Error(w, "Failed to initialize application.", http.StatusInternalServerError)
+		respondWithError(w, http.StatusInternalServerError, "Failed to initialize application")
 		return
 	}
 
-	// Run the main workflow
-	_, htmlFilePath, err := imagecluster.Run(uploadedImages)
+	_, _, err = imagecluster.Run(uploadedImages)
 	if err != nil {
-		log.Printf("Error during ImageCluster run: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondWithError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	// Log the location of the generated HTML file
-	log.Printf("HTML file generated at: %s", htmlFilePath)
-
-	// Redirect the client to the /view endpoint to display the HTML
-	http.Redirect(w, r, "/view", http.StatusSeeOther)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":   "success",
+		"filePath": filepath.Join(tempDir, "clusters.html"),
+	})
 }
 
 // ViewHandler serves the generated HTML file at /view
@@ -149,7 +136,7 @@ func ViewHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "No HTML file available", http.StatusNotFound)
 		return
 	}
-	htmlFilePath := filepath.Join(tempDir, "clustered_fashion_items.html")
+	htmlFilePath := filepath.Join(tempDir, "clusters.html")
 	http.ServeFile(w, r, htmlFilePath)
 }
 
@@ -226,4 +213,40 @@ func (h SpaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.FileServer(http.Dir(h.StaticPath)).ServeHTTP(w, r)
+}
+
+func ProgressHandler(w http.ResponseWriter, r *http.Request) {
+	log.Println("Progress handler started")
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		log.Println("Streaming not supported")
+		http.Error(w, "Streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	progressChan := make(chan string)
+	progress.Default.Register(progressChan)
+	log.Println("Client registered for progress updates")
+
+	defer func() {
+		progress.Default.Unregister(progressChan)
+		log.Println("Client unregistered from progress updates")
+	}()
+
+	for {
+		select {
+		case msg := <-progressChan:
+			log.Printf("Sending progress: %s", msg)
+			fmt.Fprintf(w, "data: %s\n\n", msg)
+			flusher.Flush()
+		case <-r.Context().Done():
+			log.Println("Client connection closed")
+			return
+		}
+	}
 }

@@ -8,6 +8,7 @@ const ImageUploadForm = () => {
   const [maxClusterSize, setMaxClusterSize] = useState(6);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [resultUrl, setResultUrl] = useState('');
 
   const handleDrag = useCallback((e) => {
     e.preventDefault();
@@ -23,7 +24,6 @@ const ImageUploadForm = () => {
     e.preventDefault();
     e.stopPropagation();
     setIsDragging(false);
-
     const droppedFiles = [...e.dataTransfer.files];
     const imageFiles = droppedFiles.filter(file => file.type.startsWith('image/'));
     setFiles(prev => [...prev, ...imageFiles]);
@@ -43,6 +43,7 @@ const ImageUploadForm = () => {
     e.preventDefault();
     setError('');
     setIsLoading(true);
+    setResultUrl('');
 
     const formData = new FormData();
     files.forEach((file) => {
@@ -50,9 +51,6 @@ const ImageUploadForm = () => {
     });
     formData.append('minClusterSize', minClusterSize);
     formData.append('maxClusterSize', maxClusterSize);
-    formData.append('profile_id', 'default');
-    formData.append('auth_token', 'default');
-    formData.append('number_of_days_limit', '30');
 
     try {
       const response = await fetch('/api/cluster', {
@@ -61,14 +59,14 @@ const ImageUploadForm = () => {
       });
 
       if (!response.ok) {
-        const errorData = await response.text();
-        throw new Error(errorData || 'Upload failed');
+        throw new Error(await response.text() || 'Upload failed');
       }
 
-      window.location.href = '/view';
+      await response.json();
+      setResultUrl(`http://localhost:8080/api/view`);
     } catch (error) {
       console.error('Error:', error);
-      setError(error.message || 'Failed to upload images. Please try again.');
+      setError(error.message || 'Failed to upload images');
     } finally {
       setIsLoading(false);
     }
@@ -81,6 +79,12 @@ const ImageUploadForm = () => {
         {error && (
             <div className="mb-4 p-4 bg-red-100 border border-red-400 text-red-700 rounded">
               {error}
+            </div>
+        )}
+
+        {resultUrl && (
+            <div className="mb-4 p-4 bg-green-100 border border-green-400 text-green-700 rounded">
+              Clustering complete! View results at: <a href={resultUrl} className="underline" target="_blank" rel="noopener noreferrer">{resultUrl}</a>
             </div>
         )}
 
@@ -177,8 +181,7 @@ const ImageUploadForm = () => {
             ${files.length === 0 || isLoading
                   ? 'bg-gray-300 cursor-not-allowed text-gray-500'
                   : 'bg-blue-500 hover:bg-blue-600 text-white shadow-sm'
-              }
-          `}
+              }`}
           >
             {isLoading ? (
                 <span className="flex items-center justify-center">
@@ -197,4 +200,4 @@ const ImageUploadForm = () => {
   );
 };
 
-export default ImageUploadForm;
+export default ImageUploadForm

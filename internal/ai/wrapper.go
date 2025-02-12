@@ -58,12 +58,14 @@ var AvailableServices = []ServiceConfig{
 		Model:       nil,
 		Order:       4,
 	},
+	/*,
 	{
 		ServiceType: ClaudeSonnetService,
 		Name:        "Claude Sonnet v3.5",
 		Model:       nil,
 		Order:       5,
 	},
+	*/
 }
 
 // GenerateTitleAndCatchyPhrase maintains backward compatibility
