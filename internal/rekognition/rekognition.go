@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"gocv.io/x/gocv"
+	"image"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -14,6 +17,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/rekognition"
 	"github.com/aws/aws-sdk-go-v2/service/rekognition/types"
 )
+
+const MaxImageSize = 5 * 1024 * 1024 // 5MB in bytes
 
 // RekognitionService interacts with AWS Rekognition to detect labels in images.
 type RekognitionService struct {
@@ -81,20 +86,20 @@ func NewRekognitionService(region, cacheDir string) (*RekognitionService, error)
 // Returns:
 // - A slice of detected labels.
 // - An error if detection fails.
+// DetectLabels detects labels from an image stored at the specified path using AWS Rekognition.
 func (rs *RekognitionService) DetectLabels(imagePath string, maxLabels int32, minConfidence float32) ([]types.Label, error) {
 	// Generate cache file path based on the image name
 	cacheFilePath := rs.getCacheFilePath(imagePath)
 
 	// Check if the cache file exists
 	if labels, err := rs.loadLabelsFromCache(cacheFilePath); err == nil {
-		// Labels found in cache
 		return labels, nil
 	}
 
-	// If no cache, proceed to call Rekognition API
-	imageBytes, err := os.ReadFile(imagePath)
+	// If no cache, resize if needed and proceed to call Rekognition API
+	imageBytes, err := resizeImageIfNeeded(imagePath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read image file '%s': %v", imagePath, err)
+		return nil, fmt.Errorf("failed to process image file '%s': %v", imagePath, err)
 	}
 
 	input := &rekognition.DetectLabelsInput{
@@ -163,4 +168,93 @@ func (rs *RekognitionService) storeLabelsInCache(cacheFilePath string, labels []
 	}
 
 	return nil
+}
+
+// resizeImageIfNeeded resizes the image if it's larger than MaxImageSize
+func resizeImageIfNeeded(imagePath string) ([]byte, error) {
+	// Read the file
+	fileInfo, err := os.Stat(imagePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get file info: %v", err)
+	}
+
+	// If file is under size limit, just read and return it
+	if fileInfo.Size() <= MaxImageSize {
+		return os.ReadFile(imagePath)
+	}
+
+	log.Printf("Image %s is too large (%d bytes), resizing...", imagePath, fileInfo.Size())
+
+	// Read image using gocv
+	img := gocv.IMRead(imagePath, gocv.IMReadColor)
+	if img.Empty() {
+		return nil, fmt.Errorf("failed to read image for resizing")
+	}
+	defer img.Close()
+
+	// Calculate new dimensions while maintaining aspect ratio
+	originalSize := img.Size()
+	ratio := float64(originalSize[1]) / float64(originalSize[0])
+
+	// Start with a reasonable max dimension (e.g., 2048 pixels)
+	var newWidth, newHeight int
+	maxDimension := 2048
+	if originalSize[0] > originalSize[1] {
+		newWidth = maxDimension
+		newHeight = int(float64(maxDimension) * ratio)
+	} else {
+		newHeight = maxDimension
+		newWidth = int(float64(maxDimension) / ratio)
+	}
+
+	// Create a new mat for the resized image
+	resized := gocv.NewMat()
+	defer resized.Close()
+
+	// Resize the image
+	gocv.Resize(img, &resized, image.Point{X: newWidth, Y: newHeight}, 0, 0, gocv.InterpolationLinear)
+
+	// Create a temporary file for the resized image
+	tempFile, err := os.CreateTemp("", "resize_*.jpg")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temp file: %v", err)
+	}
+	tempPath := tempFile.Name()
+	tempFile.Close()
+	defer os.Remove(tempPath)
+
+	// Write the resized image
+	success := gocv.IMWrite(tempPath, resized)
+	if !success {
+		return nil, fmt.Errorf("failed to write resized image")
+	}
+
+	// Read the resized file
+	resizedData, err := os.ReadFile(tempPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read resized image: %v", err)
+	}
+
+	// If still too large, try again with more aggressive resizing
+	if len(resizedData) > MaxImageSize {
+		log.Printf("Image still too large after initial resize (%d bytes), reducing dimensions further", len(resizedData))
+
+		// Try with smaller dimensions
+		newWidth = newWidth / 2
+		newHeight = newHeight / 2
+		gocv.Resize(img, &resized, image.Point{X: newWidth, Y: newHeight}, 0, 0, gocv.InterpolationLinear)
+
+		success = gocv.IMWrite(tempPath, resized)
+		if !success {
+			return nil, fmt.Errorf("failed to write resized image with reduced dimensions")
+		}
+
+		resizedData, err = os.ReadFile(tempPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read resized image: %v", err)
+		}
+	}
+
+	log.Printf("Successfully resized image from %d bytes to %d bytes", fileInfo.Size(), len(resizedData))
+	return resizedData, nil
 }

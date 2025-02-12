@@ -6,6 +6,7 @@ import (
 	"image"
 	"imageclust/internal/rekognition"
 	"log"
+	"os"
 	"path/filepath"
 	"sync"
 
@@ -161,8 +162,6 @@ func GetImageEmbedding(appCtx *AppContext, imagePath string) ([]float32, error) 
 	return embedding, nil
 }
 
-// CreateProductEmbedding generates an embedding for a product using ResNet50 and Rekognition labels
-
 // GenerateLabelVector converts labels into a one-hot encoded vector based on the full label set
 func GenerateLabelVector(labels []string, labelSet map[string]int) []float32 {
 	labelVector := make([]float32, len(labelSet))
@@ -184,18 +183,31 @@ func CombineEmbeddings(embedding []float32, labelVector []float32) []float32 {
 }
 
 // BuildLabelSet constructs a set of all possible labels from the dataset
+// In embeddings.go, update the BuildLabelSet function:
+
 func BuildLabelSet(productRefIDs []string, rekognitionSvc *rekognition.RekognitionService, appCtx *AppContext) error {
 	log.Println("Building label set from product images")
 	labelSet := make(map[string]int)
 	index := 0
 
-	for _, productRefID := range productRefIDs {
-		imagePath := filepath.Join(appCtx.ImageDir, productRefID+".jpg")
+	// Get list of files in the images directory
+	files, err := os.ReadDir(appCtx.ImageDir)
+	if err != nil {
+		return fmt.Errorf("failed to read image directory: %v", err)
+	}
+
+	// Process each file in the directory
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+
+		imagePath := filepath.Join(appCtx.ImageDir, file.Name())
 
 		// Detect labels (cached)
 		labels, err := rekognitionSvc.DetectLabels(imagePath, 10, 80)
 		if err != nil {
-			return fmt.Errorf("failed to detect labels for product %s: %v", productRefID, err)
+			return fmt.Errorf("failed to detect labels for image %s: %v", file.Name(), err)
 		}
 
 		// Collect labels into the label set
@@ -206,6 +218,15 @@ func BuildLabelSet(productRefIDs []string, rekognitionSvc *rekognition.Rekogniti
 				index++
 			}
 		}
+
+		// Store the labels for this image
+		var labelNames []string
+		for _, label := range labels {
+			labelNames = append(labelNames, *label.Name)
+		}
+		appCtx.Mutex.Lock()
+		appCtx.LabelsMapping[file.Name()] = labelNames
+		appCtx.Mutex.Unlock()
 	}
 
 	// Assign the built label set to the app context

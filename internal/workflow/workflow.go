@@ -76,6 +76,8 @@ func (ic *ImageCluster) Run(uploadedImages []models.UploadedImage) (map[string]m
 
 	log.Printf("Processing %d uploaded images", len(uploadedImages))
 	productDetails := make([]models.CombinedProductDetails, len(uploadedImages))
+	productRefIDs := make([]string, len(uploadedImages))
+
 	for i, img := range uploadedImages {
 		imagePath := filepath.Join(ic.EmbeddingsModel.ImageDir, img.Filename)
 		err := os.WriteFile(imagePath, img.Data, 0644)
@@ -95,15 +97,17 @@ func (ic *ImageCluster) Run(uploadedImages []models.UploadedImage) (map[string]m
 		}
 		log.Printf("Detected %d labels for image %s", len(labelNames), img.Filename)
 
+		productRefIDs[i] = fmt.Sprintf("img_%d", i)
 		productDetails[i] = models.CombinedProductDetails{
-			ProductReferenceID: fmt.Sprintf("img_%d", i),
+			ProductReferenceID: productRefIDs[i],
 			ImagePath:          imagePath,
 			Labels:             labelNames,
 		}
 	}
 
+	// Build label set using the actual files in the directory
 	log.Println("Building label set from detected labels")
-	err = embeddings.BuildLabelSet(getProductRefIDs(productDetails), ic.RekognitionSvc, ic.EmbeddingsModel)
+	err = embeddings.BuildLabelSet(productRefIDs, ic.RekognitionSvc, ic.EmbeddingsModel)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to build label set: %v", err)
 	}
