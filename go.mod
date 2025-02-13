@@ -9,7 +9,10 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/rekognition v1.45.18
 	github.com/gorilla/mux v1.8.1
 	gocv.io/x/gocv v0.40.0
+	imageclust/internal/gocv v0.0.0
 )
+
+replace imageclust/internal/gocv => ./internal/gocv
 
 require (
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.6.8 // indirect
