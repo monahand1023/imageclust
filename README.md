@@ -2,7 +2,7 @@
 
 ## Introduction
 
-ImageClust is a sophisticated image clustering and analysis platform that combines modern computer vision techniques with advanced machine learning algorithms to organize image collections into meaningful groups. At its core, the system leverages deep learning embeddings from ResNet50, enriched with semantic labels from AWS Rekognition, to create comprehensive image representations that capture both visual and contextual information.
+ImageClust is an image clustering and analysis platform that combines modern computer vision techniques with advanced machine learning algorithms to organize image collections into meaningful groups. At its core, the system leverages deep learning embeddings from ResNet50, enriched with semantic labels from AWS Rekognition, to create comprehensive image representations that capture both visual and contextual information.
 
 The platform is designed to solve the challenging problem of organizing large image collections in a way that goes beyond simple visual similarity. By incorporating semantic understanding through AWS Rekognition and using hierarchical clustering with size constraints, ImageClust creates balanced, meaningful groups of images that are both visually and contextually related.
 
@@ -10,7 +10,7 @@ The platform is designed to solve the challenging problem of organizing large im
 
 ### Frontend Architecture
 
-The frontend is built as a modern single-page application using React 18, with a focus on performance and user experience. Here's a detailed breakdown of the frontend components:
+The frontend is built as a single-page application using React 18, with a focus on performance and user experience. Here's a breakdown of the frontend components:
 
 1. **Core Components**
    - `ImageUploadForm.jsx`: Handles file uploads with drag-and-drop functionality using browser's File API
@@ -22,6 +22,8 @@ The frontend is built as a modern single-page application using React 18, with a
    - File handling with proper cleanup and error management
    - Real-time progress tracking for uploads and processing
 
+
+
 3. **API Integration**
    - RESTful API communication with the backend
    - Proper error handling and retry mechanisms
@@ -29,7 +31,7 @@ The frontend is built as a modern single-page application using React 18, with a
 
 ### Backend Architecture
 
-The backend is implemented in Go, chosen for its performance characteristics and excellent concurrency support. The system is organized into several key packages:
+The backend is implemented in Go. The system is organized into several key packages:
 
 1. **Core Packages**
    - `embeddings`: Handles image processing and feature extraction using ResNet50
@@ -45,6 +47,8 @@ The backend is implemented in Go, chosen for its performance characteristics and
 
 3. **Image Processing Pipeline**
    - OpenCV integration for image preprocessing
+
+
    - ResNet50 implementation using ONNX format
    - Efficient caching system for embeddings and labels
 
@@ -52,7 +56,23 @@ The backend is implemented in Go, chosen for its performance characteristics and
 
 The system processes images through several stages:
 
+
+
 1. **Upload Stage**
+
+
+
+
+
+
+
+
+
+
+
+
+
+
    ```
    User Upload → Frontend Validation → Backend Storage
    ```
