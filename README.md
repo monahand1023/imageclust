@@ -1,8 +1,10 @@
-# ImageClust: Advanced Image Clustering and Analysis Platform
+# ImageClust: Image Clustering and Analysis Platform
 
 ## Introduction
 
 ImageClust is an image clustering and analysis platform that combines modern computer vision techniques with advanced machine learning algorithms to organize image collections into meaningful groups. At its core, the system leverages deep learning embeddings from ResNet50, enriched with semantic labels from AWS Rekognition, to create comprehensive image representations that capture both visual and contextual information.
+
+(For more details on ResNet50, which is a CNN convolution neural network that excels at image classification, see here: https://blog.roboflow.com/what-is-resnet-50/)
 
 The platform is designed to solve the challenging problem of organizing large image collections in a way that goes beyond simple visual similarity. By incorporating semantic understanding through AWS Rekognition and using hierarchical clustering with size constraints, ImageClust creates balanced, meaningful groups of images that are both visually and contextually related.
 
