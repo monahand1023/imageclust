@@ -11,10 +11,14 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 )
+
+// maxWorkers limits concurrent goroutines for resource-intensive operations
+var maxWorkers = runtime.NumCPU()
 
 type ImageCluster struct {
 	TempDir         string
@@ -22,7 +26,6 @@ type ImageCluster struct {
 	EmbeddingsModel *embeddings.AppContext
 	MinClusterSize  int
 	MaxClusterSize  int
-	Mutex           sync.Mutex
 }
 
 type ItemDetails struct {
@@ -86,14 +89,14 @@ func (ic *ImageCluster) Run(uploadedImages []models.UploadedImage) (map[string]m
 		return nil, "", err
 	}
 
-	clusters, success := clustering.PerformClusteringWithConstraints(
+	clusters, err := clustering.PerformClusteringWithConstraints(
 		embeddingsList,
 		itemIDs,
 		ic.MinClusterSize,
 		ic.MaxClusterSize,
 	)
-	if !success {
-		return nil, "", fmt.Errorf("clustering failed")
+	if err != nil {
+		return nil, "", fmt.Errorf("clustering failed: %w", err)
 	}
 
 	clusterDetails := ic.prepareClusterDetails(clusters, itemDetails)
@@ -146,41 +149,91 @@ func (ic *ImageCluster) processImages(uploadedImages []models.UploadedImage) ([]
 	return itemDetails, nil
 }
 
+// embeddingJob represents a unit of work for the worker pool
+type embeddingJob struct {
+	index int
+	item  ItemDetails
+}
+
+// embeddingResult represents the result of processing an embedding job
+type embeddingResult struct {
+	index     int
+	embedding []float32
+	itemID    string
+	err       error
+}
+
 func (ic *ImageCluster) createEmbeddings(items []ItemDetails) ([][]float32, []string, error) {
 	embeddingsList := make([][]float32, len(items))
 	itemIDs := make([]string, len(items))
-	var mu sync.Mutex
+
+	// Use worker pool to limit concurrency
+	numWorkers := maxWorkers
+	if len(items) < numWorkers {
+		numWorkers = len(items)
+	}
+
+	jobs := make(chan embeddingJob, len(items))
+	results := make(chan embeddingResult, len(items))
+
+	// Start workers
 	var wg sync.WaitGroup
-	errChan := make(chan error, len(items))
-
-	for i, item := range items {
+	for w := 0; w < numWorkers; w++ {
 		wg.Add(1)
-		go func(idx int, item ItemDetails) {
+		go func() {
 			defer wg.Done()
+			for job := range jobs {
+				imageEmbedding, err := embeddings.GetImageEmbedding(ic.EmbeddingsModel, job.item.ImagePath)
+				if err != nil {
+					results <- embeddingResult{
+						index: job.index,
+						err:   fmt.Errorf("failed to generate embedding for %s: %v", job.item.ID, err),
+					}
+					continue
+				}
 
-			imageEmbedding, err := embeddings.GetImageEmbedding(ic.EmbeddingsModel, item.ImagePath)
-			if err != nil {
-				errChan <- fmt.Errorf("failed to generate embedding for %s: %v", item.ID, err)
-				return
+				labelVector := embeddings.GenerateLabelVector(job.item.Labels, ic.EmbeddingsModel.LabelSet)
+				combinedEmbedding := embeddings.CombineEmbeddings(imageEmbedding, labelVector)
+
+				results <- embeddingResult{
+					index:     job.index,
+					embedding: combinedEmbedding,
+					itemID:    job.item.ID,
+				}
 			}
-
-			labelVector := embeddings.GenerateLabelVector(item.Labels, ic.EmbeddingsModel.LabelSet)
-			combinedEmbedding := embeddings.CombineEmbeddings(imageEmbedding, labelVector)
-
-			mu.Lock()
-			embeddingsList[idx] = combinedEmbedding
-			itemIDs[idx] = item.ID
-			mu.Unlock()
-		}(i, item)
+		}()
 	}
 
-	wg.Wait()
-	close(errChan)
+	// Send jobs to workers
+	for i, item := range items {
+		jobs <- embeddingJob{index: i, item: item}
+	}
+	close(jobs)
 
-	if err := <-errChan; err != nil {
-		return nil, nil, err
+	// Wait for workers to finish and close results channel
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results
+	var firstErr error
+	for result := range results {
+		if result.err != nil {
+			if firstErr == nil {
+				firstErr = result.err
+			}
+			continue
+		}
+		embeddingsList[result.index] = result.embedding
+		itemIDs[result.index] = result.itemID
 	}
 
+	if firstErr != nil {
+		return nil, nil, firstErr
+	}
+
+	log.Printf("Generated embeddings for %d items using %d workers", len(items), numWorkers)
 	return embeddingsList, itemIDs, nil
 }
 

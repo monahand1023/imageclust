@@ -52,17 +52,16 @@ func PreprocessImage(imagePath string) (gocv.Mat, error) {
 		return gocv.NewMat(), fmt.Errorf("failed to read image: %s. The image file might be corrupt or unreadable", imagePath)
 	}
 	defer func(img *gocv.Mat) {
-		err := img.Close()
-		if err != nil {
+		if err := img.Close(); err != nil {
+			log.Printf("Warning: failed to close image mat: %v", err)
 		}
 	}(&img)
 
 	// Resize to 224x224 (standard for ResNet50)
 	resized := gocv.NewMat()
 	defer func(resized *gocv.Mat) {
-		err := resized.Close()
-		if err != nil {
-
+		if err := resized.Close(); err != nil {
+			log.Printf("Warning: failed to close resized mat: %v", err)
 		}
 	}(&resized)
 
@@ -74,8 +73,8 @@ func PreprocessImage(imagePath string) (gocv.Mat, error) {
 	// Convert image to RGB
 	rgb := gocv.NewMat()
 	defer func(rgb *gocv.Mat) {
-		err := rgb.Close()
-		if err != nil {
+		if err := rgb.Close(); err != nil {
+			log.Printf("Warning: failed to close rgb mat: %v", err)
 		}
 	}(&rgb)
 
@@ -87,9 +86,8 @@ func PreprocessImage(imagePath string) (gocv.Mat, error) {
 	// Create a blob from the image
 	blob := gocv.NewMat()
 	defer func(blob *gocv.Mat) {
-		err := blob.Close()
-		if err != nil {
-
+		if err := blob.Close(); err != nil {
+			log.Printf("Warning: failed to close blob mat: %v", err)
 		}
 	}(&blob)
 
@@ -123,9 +121,8 @@ func GetImageEmbedding(appCtx *AppContext, imagePath string) ([]float32, error) 
 		return nil, err
 	}
 	defer func(blob *gocv.Mat) {
-		err := blob.Close()
-		if err != nil {
-
+		if err := blob.Close(); err != nil {
+			log.Printf("Warning: failed to close blob mat: %v", err)
 		}
 	}(&blob)
 
@@ -143,8 +140,8 @@ func GetImageEmbedding(appCtx *AppContext, imagePath string) ([]float32, error) 
 		return nil, fmt.Errorf("failed to generate embedding for image: %s", imagePath)
 	}
 	defer func(embeddingMat *gocv.Mat) {
-		err := embeddingMat.Close()
-		if err != nil {
+		if err := embeddingMat.Close(); err != nil {
+			log.Printf("Warning: failed to close embedding mat: %v", err)
 		}
 	}(&embeddingMat)
 

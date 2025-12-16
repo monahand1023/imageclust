@@ -1,19 +1,14 @@
 package ai
 
 import (
-	"imageclust/internal/ai/amazon-nova"
-	"imageclust/internal/ai/claude-haiku"
-	"imageclust/internal/ai/claude-sonnet"
-	"imageclust/internal/ai/openai"
+	"sort"
 	"sync"
+
+	"imageclust/internal/ai/claude-haiku"
 )
 
 const (
-	AmazonNovaMicroService = 1
-	GPT4Service            = 2
-	GPT35Service           = 3
-	ClaudeHaikuService     = 4
-	ClaudeSonnetService    = 5
+	ClaudeHaikuService = 1
 )
 
 // ServiceConfig represents a service configuration
@@ -34,53 +29,19 @@ type ModelOutput struct {
 
 // AvailableServices defines all available AI services in desired order
 var AvailableServices = []ServiceConfig{
-	/*	{
-			ServiceType: AmazonNovaMicroService,
-			Name:        "Amazon Nova Micro",
-			Model:       nil,
-			Order:       1,
-		},
-		{
-			ServiceType: GPT35Service,
-			Name:        "OpenAI GPT-3.5 Turbo",
-			Model:       openai.GPT35Turbo,
-			Order:       2,
-		},
-		{
-			ServiceType: GPT4Service,
-			Name:        "Open AI GPT-4",
-			Model:       openai.GPT4,
-			Order:       3,
-		},
-	*/{
+	{
 		ServiceType: ClaudeHaikuService,
 		Name:        "Claude Haiku v3.5",
 		Model:       nil,
-		Order:       4,
+		Order:       1,
 	},
-	/*,
-	{
-		ServiceType: ClaudeSonnetService,
-		Name:        "Claude Sonnet v3.5",
-		Model:       nil,
-		Order:       5,
-	},
-	*/
 }
 
 // GenerateTitleAndCatchyPhrase maintains backward compatibility
 func GenerateTitleAndCatchyPhrase(aggregatedText string, retries int, serviceType int) (string, string) {
 	switch serviceType {
-	case AmazonNovaMicroService:
-		return amazon_nova.GenerateTitleAndCatchyPhrase(aggregatedText, retries)
-	case GPT4Service:
-		return openai.GenerateTitleAndCatchyPhrase(aggregatedText, retries, openai.GPT4)
-	case GPT35Service:
-		return openai.GenerateTitleAndCatchyPhrase(aggregatedText, retries, openai.GPT35Turbo)
 	case ClaudeHaikuService:
 		return claude_haiku.GenerateTitleAndCatchyPhrase(aggregatedText, retries)
-	case ClaudeSonnetService:
-		return claude_sonnet.GenerateTitleAndCatchyPhrase(aggregatedText, retries)
 	default:
 		return "No Title", "No Catchy Phrase"
 	}
@@ -100,16 +61,8 @@ func GenerateTitleAndCatchyPhraseMultiService(aggregatedText string, retries int
 			var title, catchyPhrase string
 
 			switch svc.ServiceType {
-			case AmazonNovaMicroService:
-				title, catchyPhrase = amazon_nova.GenerateTitleAndCatchyPhrase(aggregatedText, retries)
-			case GPT4Service, GPT35Service:
-				if openaiModel, ok := svc.Model.(openai.OpenAIModel); ok {
-					title, catchyPhrase = openai.GenerateTitleAndCatchyPhrase(aggregatedText, retries, openaiModel)
-				}
 			case ClaudeHaikuService:
 				title, catchyPhrase = claude_haiku.GenerateTitleAndCatchyPhrase(aggregatedText, retries)
-			case ClaudeSonnetService:
-				title, catchyPhrase = claude_sonnet.GenerateTitleAndCatchyPhrase(aggregatedText, retries)
 			}
 
 			mu.Lock()
@@ -125,16 +78,10 @@ func GenerateTitleAndCatchyPhraseMultiService(aggregatedText string, retries int
 
 	wg.Wait()
 
-	// Sort outputs by Order before returning
-	sortedOutputs := make([]ModelOutput, len(outputs))
-	copy(sortedOutputs, outputs)
-	for i := 0; i < len(sortedOutputs)-1; i++ {
-		for j := i + 1; j < len(sortedOutputs); j++ {
-			if sortedOutputs[i].Order > sortedOutputs[j].Order {
-				sortedOutputs[i], sortedOutputs[j] = sortedOutputs[j], sortedOutputs[i]
-			}
-		}
-	}
+	// Sort outputs by Order
+	sort.Slice(outputs, func(i, j int) bool {
+		return outputs[i].Order < outputs[j].Order
+	})
 
-	return sortedOutputs
+	return outputs
 }

@@ -62,8 +62,9 @@ const ImageUploadForm = () => {
         throw new Error(await response.text() || 'Upload failed');
       }
 
-      await response.json();
-      setResultUrl(`http://localhost:8080/api/view`);
+      const result = await response.json();
+      const sessionId = result.sessionId;
+      setResultUrl(`${window.location.origin}/api/view?session=${sessionId}`);
     } catch (error) {
       console.error('Error:', error);
       setError(error.message || 'Failed to upload images');

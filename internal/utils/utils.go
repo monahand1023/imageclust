@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 type ClusterDownload struct {
@@ -107,6 +108,18 @@ func GenerateHTMLOutput(clusters map[string]models.ClusterDetails, tempDir strin
         }
     </style>
     <script>
+        // Extract session ID from URL query parameter
+        function getSessionId() {
+            const params = new URLSearchParams(window.location.search);
+            return params.get('session') || '';
+        }
+
+        // Build image URL with session parameter
+        function getImageUrl(imageName) {
+            const session = getSessionId();
+            return '/api/image/' + imageName + (session ? '?session=' + session : '');
+        }
+
         async function downloadCluster(clusterId, title, catchyPhrase, images, labels) {
             const clusterData = {
                 title: title,
@@ -114,7 +127,7 @@ func GenerateHTMLOutput(clusters map[string]models.ClusterDetails, tempDir strin
                 images: images,
                 labels: labels
             };
-            
+
             const blob = new Blob([JSON.stringify(clusterData, null, 2)], { type: 'application/json' });
             const url = window.URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -125,6 +138,13 @@ func GenerateHTMLOutput(clusters map[string]models.ClusterDetails, tempDir strin
             window.URL.revokeObjectURL(url);
             document.body.removeChild(a);
         }
+
+        // Update image sources with session parameter on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            document.querySelectorAll('img[data-image]').forEach(function(img) {
+                img.src = getImageUrl(img.getAttribute('data-image'));
+            });
+        });
     </script>
 </head>
 <body>
@@ -164,7 +184,7 @@ func GenerateHTMLOutput(clusters map[string]models.ClusterDetails, tempDir strin
 				 <div class="image-container">
                     {{range $image := $cluster_info.Images}}
                         <div class="image">
-                            <img src="/api/image/{{$image}}" alt="Cluster image">
+                            <img data-image="{{$image}}" alt="Cluster image">
                         </div>
                     {{end}}
                 </div>
@@ -177,7 +197,6 @@ func GenerateHTMLOutput(clusters map[string]models.ClusterDetails, tempDir strin
 	// Define template functions
 	funcMap := template.FuncMap{
 		"escapeJS": escapeJS,
-		"add":      add,
 		"toJSON":   toJSON,
 	}
 
@@ -233,10 +252,6 @@ func toJSON(v interface{}) string {
 	return string(b)
 }
 
-func add(a, b int) int {
-	return a + b
-}
-
 func SanitizeFilename(name string) string {
 	return strings.Map(func(r rune) rune {
 		if (r >= 'a' && r <= 'z') ||
@@ -249,10 +264,23 @@ func SanitizeFilename(name string) string {
 	}, name)
 }
 
-func URLEncode(s string) string {
-	return strings.ReplaceAll(s, " ", "%20")
+// TruncateAndSanitize truncates input to maxLen runes and removes problematic characters
+// for use in AI prompts
+func TruncateAndSanitize(input string, maxLen int) string {
+	if utf8.RuneCountInString(input) > maxLen {
+		truncated := []rune(input)[:maxLen]
+		input = string(truncated)
+	}
+
+	input = strings.ReplaceAll(input, "\"", "")
+	input = strings.ReplaceAll(input, "\\", "")
+	input = strings.ReplaceAll(input, "\n", " ")
+	input = strings.ReplaceAll(input, "\t", " ")
+	input = strings.ReplaceAll(input, "#", "")
+	input = strings.ReplaceAll(input, "&", "and")
+	input = strings.ReplaceAll(input, "'", "")
+	input = strings.TrimSpace(input)
+
+	return input
 }
 
-func CleanText(text string) string {
-	return strings.TrimSpace(text)
-}

@@ -5,14 +5,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
+	"math"
+	"math/rand"
 	"time"
-	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
+	"imageclust/internal/utils"
 )
+
+// Backoff configuration
+const (
+	initialBackoff = 1 * time.Second
+	maxBackoff     = 30 * time.Second
+	backoffFactor  = 2.0
+	jitterFactor   = 0.3 // Add up to 30% jitter
+)
+
+// calculateBackoff returns the backoff duration for a given attempt using exponential backoff with jitter
+func calculateBackoff(attempt int) time.Duration {
+	backoff := float64(initialBackoff) * math.Pow(backoffFactor, float64(attempt))
+	if backoff > float64(maxBackoff) {
+		backoff = float64(maxBackoff)
+	}
+	// Add jitter to prevent thundering herd
+	jitter := backoff * jitterFactor * rand.Float64()
+	return time.Duration(backoff + jitter)
+}
 
 // Claude3Request represents the structure expected by Claude 3
 type Claude3Request struct {
@@ -54,7 +74,7 @@ func InstantiateBedrockClient() (*BedrockClient, error) {
 
 // GenerateTitleAndCatchyPhrase generates a title and a catchy phrase using Claude via AWS Bedrock
 func (b *BedrockClient) GenerateTitleAndCatchyPhrase(aggregatedText string, retries int) (string, string) {
-	sanitizedText := truncateAndSanitize(aggregatedText, 1000)
+	sanitizedText := utils.TruncateAndSanitize(aggregatedText, 1000)
 
 	for attempt := 0; attempt < retries; attempt++ {
 		// Create the request body using the Messages format
@@ -98,8 +118,9 @@ Features: %s.`, sanitizedText),
 		// Invoke the model
 		output, err := b.client.InvokeModel(context.Background(), input)
 		if err != nil {
-			log.Printf("Error invoking Bedrock model: %v", err)
-			time.Sleep(2 * time.Second)
+			backoff := calculateBackoff(attempt)
+			log.Printf("Error invoking Bedrock model (attempt %d/%d), retrying in %v: %v", attempt+1, retries, backoff, err)
+			time.Sleep(backoff)
 			continue
 		}
 
@@ -107,15 +128,17 @@ Features: %s.`, sanitizedText),
 		var claudeResp Claude3Response
 		err = json.Unmarshal(output.Body, &claudeResp)
 		if err != nil {
-			log.Printf("Error unmarshaling Claude response: %v", err)
-			time.Sleep(2 * time.Second)
+			backoff := calculateBackoff(attempt)
+			log.Printf("Error unmarshaling Claude response (attempt %d/%d), retrying in %v: %v", attempt+1, retries, backoff, err)
+			time.Sleep(backoff)
 			continue
 		}
 
 		// Make sure we have content in the response
 		if len(claudeResp.Content) == 0 {
-			log.Println("Empty response from Claude")
-			time.Sleep(2 * time.Second)
+			backoff := calculateBackoff(attempt)
+			log.Printf("Empty response from Claude (attempt %d/%d), retrying in %v", attempt+1, retries, backoff)
+			time.Sleep(backoff)
 			continue
 		}
 
@@ -129,8 +152,9 @@ Features: %s.`, sanitizedText),
 		var result map[string]string
 		err = json.Unmarshal([]byte(responseText), &result)
 		if err != nil {
-			log.Printf("Error unmarshaling response JSON: %v", err)
-			time.Sleep(2 * time.Second)
+			backoff := calculateBackoff(attempt)
+			log.Printf("Error unmarshaling response JSON (attempt %d/%d), retrying in %v: %v", attempt+1, retries, backoff, err)
+			time.Sleep(backoff)
 			continue
 		}
 
@@ -138,34 +162,17 @@ Features: %s.`, sanitizedText),
 		title, okTitle := result["title"]
 		catchyPhrase, okPhrase := result["catchy_phrase"]
 		if !okTitle || !okPhrase {
-			log.Println("Claude response missing 'title' or 'catchy_phrase'")
-			time.Sleep(2 * time.Second)
+			backoff := calculateBackoff(attempt)
+			log.Printf("Claude response missing 'title' or 'catchy_phrase' (attempt %d/%d), retrying in %v", attempt+1, retries, backoff)
+			time.Sleep(backoff)
 			continue
 		}
 
 		return title, catchyPhrase
 	}
 
-	log.Println("Failed to generate title and catchy phrase after retries")
+	log.Printf("Failed to generate title and catchy phrase after %d retries", retries)
 	return "No Title", "No phrase available"
-}
-
-func truncateAndSanitize(input string, maxLen int) string {
-	if utf8.RuneCountInString(input) > maxLen {
-		truncated := []rune(input)[:maxLen]
-		input = string(truncated)
-	}
-
-	input = strings.ReplaceAll(input, "\"", "")
-	input = strings.ReplaceAll(input, "\\", "")
-	input = strings.ReplaceAll(input, "\n", " ")
-	input = strings.ReplaceAll(input, "\t", " ")
-	input = strings.ReplaceAll(input, "#", "")
-	input = strings.ReplaceAll(input, "&", "and")
-	input = strings.ReplaceAll(input, "'", "")
-	input = strings.TrimSpace(input)
-
-	return input
 }
 
 // GenerateTitleAndCatchyPhrase is a package-level function that creates a new BedrockClient and calls its method

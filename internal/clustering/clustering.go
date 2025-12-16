@@ -2,10 +2,14 @@
 package clustering
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"math"
 )
+
+// ErrDimensionMismatch is returned when vector dimensions don't match
+var ErrDimensionMismatch = errors.New("vector dimensions do not match")
 
 // Cluster represents a cluster of data points.
 type Cluster struct {
@@ -58,22 +62,27 @@ func RemoveClusters(clusters []Cluster, i, j int) []Cluster {
 }
 
 // ComputeInitialDistanceMatrix computes the initial distance matrix between clusters.
-func ComputeInitialDistanceMatrix(clusters []Cluster) [][]float32 {
+// Returns an error if any distance calculation fails.
+func ComputeInitialDistanceMatrix(clusters []Cluster) ([][]float32, error) {
 	n := len(clusters)
 	distanceMatrix := make([][]float32, n)
 	for i := 0; i < n; i++ {
 		distanceMatrix[i] = make([]float32, n)
 		for j := 0; j < i; j++ {
-			distance := WardDistance(clusters[i], clusters[j])
+			distance, err := WardDistance(clusters[i], clusters[j])
+			if err != nil {
+				return nil, fmt.Errorf("failed to compute distance between clusters %d and %d: %w", i, j, err)
+			}
 			distanceMatrix[i][j] = distance
 			distanceMatrix[j][i] = distance
 		}
 	}
-	return distanceMatrix
+	return distanceMatrix, nil
 }
 
 // UpdateDistanceMatrix updates the distance matrix after merging clusters.
-func UpdateDistanceMatrix(distanceMatrix [][]float32, clusters []Cluster, newCluster Cluster, removedIdx1, removedIdx2 int) [][]float32 {
+// Returns an error if any distance calculation fails.
+func UpdateDistanceMatrix(distanceMatrix [][]float32, clusters []Cluster, newCluster Cluster, removedIdx1, removedIdx2 int) ([][]float32, error) {
 	// Remove rows and columns corresponding to the removed clusters
 	distanceMatrix = RemoveRowsAndColumns(distanceMatrix, removedIdx1, removedIdx2)
 
@@ -81,7 +90,10 @@ func UpdateDistanceMatrix(distanceMatrix [][]float32, clusters []Cluster, newClu
 	n := len(clusters)
 	newRow := make([]float32, n)
 	for i := 0; i < n-1; i++ {
-		distance := WardDistance(clusters[i], newCluster)
+		distance, err := WardDistance(clusters[i], newCluster)
+		if err != nil {
+			return nil, fmt.Errorf("failed to compute distance to new cluster: %w", err)
+		}
 		newRow[i] = distance
 	}
 	newRow[n-1] = 0.0 // Distance to itself is zero
@@ -92,7 +104,7 @@ func UpdateDistanceMatrix(distanceMatrix [][]float32, clusters []Cluster, newClu
 	}
 	distanceMatrix = append(distanceMatrix, newRow)
 
-	return distanceMatrix
+	return distanceMatrix, nil
 }
 
 // RemoveRowsAndColumns removes rows and columns at indices i and j from the distance matrix.
@@ -133,27 +145,32 @@ func FindClosestClusters(distanceMatrix [][]float32) (int, int) {
 }
 
 // WardDistance calculates the Ward's linkage distance between two clusters.
-func WardDistance(a, b Cluster) float32 {
+// Returns an error if centroid dimensions don't match.
+func WardDistance(a, b Cluster) (float32, error) {
 	diff := make([]float32, len(a.Centroid))
 	for i := range diff {
 		diff[i] = a.Centroid[i] - b.Centroid[i]
 	}
-	distanceSquared := DotFloat32(diff, diff)
+	distanceSquared, err := DotFloat32(diff, diff)
+	if err != nil {
+		return 0, err
+	}
 	numerator := float32(a.Size * b.Size)
 	denominator := float32(a.Size + b.Size)
-	return (numerator / denominator) * distanceSquared
+	return (numerator / denominator) * distanceSquared, nil
 }
 
-// DotFloat32 computes the dot product of two float32 slices
-func DotFloat32(a, b []float32) float32 {
+// DotFloat32 computes the dot product of two float32 slices.
+// Returns an error if slices have different lengths.
+func DotFloat32(a, b []float32) (float32, error) {
 	if len(a) != len(b) {
-		panic("DotFloat32: slices have different lengths")
+		return 0, fmt.Errorf("%w: got lengths %d and %d", ErrDimensionMismatch, len(a), len(b))
 	}
 	var sum float32
 	for i := 0; i < len(a); i++ {
 		sum += a[i] * b[i]
 	}
-	return sum
+	return sum, nil
 }
 
 // CalculateOptimalClusters calculates the optimal number of clusters based on desired cluster size constraints.
@@ -194,16 +211,15 @@ func CalculateOptimalClusters(totalItems, minSize, maxSize int) (int, error) {
 // - maxSize: Maximum number of items per cluster.
 // Returns:
 // - A map where keys are cluster IDs (starting from 0) and values are slices of product reference IDs.
-// - A boolean indicating whether clustering was successful.
-func PerformClusteringWithConstraints(embeddings [][]float32, productReferenceIDs []string, minSize, maxSize int) (map[int][]string, bool) {
+// - An error if clustering fails.
+func PerformClusteringWithConstraints(embeddings [][]float32, productReferenceIDs []string, minSize, maxSize int) (map[int][]string, error) {
 	totalItems := len(embeddings)
 	log.Printf("Total items for clustering: %d", totalItems)
 
 	// Calculate the optimal number of clusters
 	nClusters, err := CalculateOptimalClusters(totalItems, minSize, maxSize)
 	if err != nil {
-		log.Printf("Clustering constraint error: %v", err)
-		return nil, false
+		return nil, fmt.Errorf("clustering constraint error: %w", err)
 	}
 	log.Printf("Optimal number of clusters calculated: %d", nClusters)
 
@@ -214,7 +230,10 @@ func PerformClusteringWithConstraints(embeddings [][]float32, productReferenceID
 	}
 
 	// Compute initial distance matrix
-	distanceMatrix := ComputeInitialDistanceMatrix(clusters)
+	distanceMatrix, err := ComputeInitialDistanceMatrix(clusters)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute initial distance matrix: %w", err)
+	}
 
 	// Hierarchical clustering using Ward's method with size constraints
 	for len(clusters) > nClusters {
@@ -241,7 +260,10 @@ func PerformClusteringWithConstraints(embeddings [][]float32, productReferenceID
 		clusters = append(clusters, newCluster)
 
 		// Update the distance matrix with the new cluster
-		distanceMatrix = UpdateDistanceMatrix(distanceMatrix, clusters, newCluster, i, j)
+		distanceMatrix, err = UpdateDistanceMatrix(distanceMatrix, clusters, newCluster, i, j)
+		if err != nil {
+			return nil, fmt.Errorf("failed to update distance matrix: %w", err)
+		}
 		log.Printf("Merged clusters %d and %d into new cluster with size %d", i, j, newCluster.Size)
 	}
 
@@ -250,10 +272,9 @@ func PerformClusteringWithConstraints(embeddings [][]float32, productReferenceID
 	for _, cluster := range clusters {
 		if cluster.Size > maxSize {
 			// Split the oversized cluster
-			subClusters, success := splitCluster(cluster, embeddings, maxSize)
-			if !success {
-				log.Printf("Failed to split cluster of size %d into smaller clusters.", cluster.Size)
-				return nil, false
+			subClusters, err := splitCluster(cluster, embeddings, maxSize)
+			if err != nil {
+				return nil, fmt.Errorf("failed to split cluster of size %d: %w", cluster.Size, err)
 			}
 			finalClusters = append(finalClusters, subClusters...)
 		} else {
@@ -280,7 +301,7 @@ func PerformClusteringWithConstraints(embeddings [][]float32, productReferenceID
 	}
 
 	log.Printf("Clustering successful. Formed %d valid clusters.", len(clusterMap))
-	return clusterMap, true
+	return clusterMap, nil
 }
 
 // splitCluster splits an oversized cluster into smaller clusters respecting maxSize.
@@ -291,8 +312,8 @@ func PerformClusteringWithConstraints(embeddings [][]float32, productReferenceID
 // - maxSize: Maximum number of items per cluster.
 // Returns:
 // - A slice of new clusters resulting from the split.
-// - A boolean indicating whether the split was successful.
-func splitCluster(cluster Cluster, embeddings [][]float32, maxSize int) ([]Cluster, bool) {
+// - An error if the split fails.
+func splitCluster(cluster Cluster, embeddings [][]float32, maxSize int) ([]Cluster, error) {
 	subEmbeddings := make([][]float32, len(cluster.Indices))
 	for i, idx := range cluster.Indices {
 		subEmbeddings[i] = embeddings[idx]
@@ -302,8 +323,7 @@ func splitCluster(cluster Cluster, embeddings [][]float32, maxSize int) ([]Clust
 	subTotalItems := len(subEmbeddings)
 	nSubClusters, err := CalculateOptimalClusters(subTotalItems, 1, maxSize) // Assuming minSize=1 for sub-clusters
 	if err != nil {
-		log.Printf("Error calculating sub-clusters: %v", err)
-		return nil, false
+		return nil, fmt.Errorf("error calculating sub-clusters: %w", err)
 	}
 	log.Printf("Splitting cluster into %d sub-clusters.", nSubClusters)
 
@@ -314,7 +334,10 @@ func splitCluster(cluster Cluster, embeddings [][]float32, maxSize int) ([]Clust
 	}
 
 	// Compute initial distance matrix for sub-clusters
-	subDistanceMatrix := ComputeInitialDistanceMatrix(subClusters)
+	subDistanceMatrix, err := ComputeInitialDistanceMatrix(subClusters)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute sub-cluster distance matrix: %w", err)
+	}
 
 	// Perform hierarchical clustering on sub-clusters
 	for len(subClusters) > nSubClusters {
@@ -341,9 +364,12 @@ func splitCluster(cluster Cluster, embeddings [][]float32, maxSize int) ([]Clust
 		subClusters = append(subClusters, newSubCluster)
 
 		// Update the distance matrix with the new sub-cluster
-		subDistanceMatrix = UpdateDistanceMatrix(subDistanceMatrix, subClusters, newSubCluster, i, j)
+		subDistanceMatrix, err = UpdateDistanceMatrix(subDistanceMatrix, subClusters, newSubCluster, i, j)
+		if err != nil {
+			return nil, fmt.Errorf("failed to update sub-cluster distance matrix: %w", err)
+		}
 		log.Printf("Merged sub-clusters %d and %d into new sub-cluster with size %d", i, j, newSubCluster.Size)
 	}
 
-	return subClusters, true
+	return subClusters, nil
 }
