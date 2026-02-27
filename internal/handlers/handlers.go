@@ -200,18 +200,34 @@ func ClusterAndGenerateHandler(w http.ResponseWriter, r *http.Request) {
 			len(uploadErrors), len(files), strings.Join(uploadErrors, "; "))
 	}
 
-	// Parse cluster size settings from form data
-	minClusterSize := 3 // default
-	maxClusterSize := 6 // default
+	// Parse and validate cluster size settings from form data
+	minClusterSize := 3  // default
+	maxClusterSize := 6  // default
+	const maxAllowedClusterSize = 100
+
 	if minStr := r.FormValue("minClusterSize"); minStr != "" {
-		if val, err := strconv.Atoi(minStr); err == nil && val >= 2 {
-			minClusterSize = val
+		val, err := strconv.Atoi(minStr)
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, "minClusterSize must be a valid integer")
+			return
 		}
+		if val < 2 || val > maxAllowedClusterSize {
+			respondWithError(w, http.StatusBadRequest, fmt.Sprintf("minClusterSize must be between 2 and %d", maxAllowedClusterSize))
+			return
+		}
+		minClusterSize = val
 	}
 	if maxStr := r.FormValue("maxClusterSize"); maxStr != "" {
-		if val, err := strconv.Atoi(maxStr); err == nil && val >= minClusterSize {
-			maxClusterSize = val
+		val, err := strconv.Atoi(maxStr)
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, "maxClusterSize must be a valid integer")
+			return
 		}
+		if val < minClusterSize || val > maxAllowedClusterSize {
+			respondWithError(w, http.StatusBadRequest, fmt.Sprintf("maxClusterSize must be between %d and %d", minClusterSize, maxAllowedClusterSize))
+			return
+		}
+		maxClusterSize = val
 	}
 
 	imagecluster, err := workflow.NewImageCluster(minClusterSize, maxClusterSize, tempDir)

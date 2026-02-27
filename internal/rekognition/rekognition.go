@@ -5,17 +5,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"gocv.io/x/gocv"
 	"image"
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/rekognition"
 	"github.com/aws/aws-sdk-go-v2/service/rekognition/types"
+	"gocv.io/x/gocv"
 )
 
 const MaxImageSize = 5 * 1024 * 1024 // 5MB in bytes
@@ -43,7 +44,10 @@ func NewRekognitionService(region, cacheDir string) (*RekognitionService, error)
 			return nil, fmt.Errorf("AWS credentials not found in environment variables")
 		}
 
-		cfg, err = config.LoadDefaultConfig(context.TODO(),
+		configCtx, configCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer configCancel()
+
+		cfg, err = config.LoadDefaultConfig(configCtx,
 			config.WithRegion(region),
 			config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
 				accessKey,
@@ -53,7 +57,10 @@ func NewRekognitionService(region, cacheDir string) (*RekognitionService, error)
 		)
 	} else {
 		// Load default AWS configuration for production
-		cfg, err = config.LoadDefaultConfig(context.TODO(),
+		configCtx, configCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer configCancel()
+
+		cfg, err = config.LoadDefaultConfig(configCtx,
 			config.WithRegion(region),
 		)
 	}
@@ -110,7 +117,10 @@ func (rs *RekognitionService) DetectLabels(imagePath string, maxLabels int32, mi
 		MinConfidence: aws.Float32(minConfidence),
 	}
 
-	result, err := rs.Client.DetectLabels(context.TODO(), input)
+	apiCtx, apiCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer apiCancel()
+
+	result, err := rs.Client.DetectLabels(apiCtx, input)
 	if err != nil {
 		return nil, fmt.Errorf("failed to detect labels for image '%s': %v", imagePath, err)
 	}

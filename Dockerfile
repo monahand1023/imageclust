@@ -8,7 +8,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # Build stage for Go backend
-FROM golang:1.23rc1 AS backend-builder
+FROM golang:1.23 AS backend-builder
 WORKDIR /app
 
 # Install OpenCV with contrib modules
