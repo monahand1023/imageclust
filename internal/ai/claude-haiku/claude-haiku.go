@@ -109,7 +109,7 @@ Features: %s.`, sanitizedText),
 
 		// Create the Bedrock invoke request
 		input := &bedrockruntime.InvokeModelInput{
-			ModelId:     aws.String("anthropic.claude-3-haiku-20240307-v1:0"),
+			ModelId:     aws.String("anthropic.claude-3-5-haiku-20241022-v1:0"),
 			Body:        requestData,
 			ContentType: aws.String("application/json"),
 			Accept:      aws.String("application/json"),
