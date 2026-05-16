@@ -1,328 +1,169 @@
-# ImageClust: Image Clustering and Analysis Platform
+# imageclust
 
-## Introduction
+Semantic image clustering that runs entirely on your local machine. Upload a collection of photos, get back labeled groups organized by what they're *about* — not just visual similarity.
 
-ImageClust is an image clustering and analysis platform that combines modern computer vision techniques with advanced machine learning algorithms to organize image collections into meaningful groups. At its core, the system leverages deep learning embeddings from ResNet50, enriched with semantic labels from AWS Rekognition, to create comprehensive image representations that capture both visual and contextual information.
+Clusters 20 images in ~50 seconds on an M4 Mac Mini (no GPU, no cloud).
 
-(For more details on ResNet50, which is a CNN convolution neural network that excels at image classification, see here: https://blog.roboflow.com/what-is-resnet-50/)
+---
 
-The platform is designed to solve the challenging problem of organizing large image collections in a way that goes beyond simple visual similarity. By incorporating semantic understanding through AWS Rekognition and using hierarchical clustering with size constraints, ImageClust creates balanced, meaningful groups of images that are both visually and contextually related.
+## How it works
 
-## Technical Architecture
-
-### Frontend Architecture
-
-The frontend is built as a single-page application using React 18, with a focus on performance and user experience. Here's a breakdown of the frontend components:
-
-1. **Core Components**
-   - `ImageUploadForm.jsx`: Handles file uploads with drag-and-drop functionality using browser's File API
-   - `App.jsx`: Main application component managing routing and global state
-   - Styling implemented using Tailwind CSS for responsive design
-
-2. **State Management**
-   - Local component state using React hooks for upload status and form data
-   - File handling with proper cleanup and error management
-   - Real-time progress tracking for uploads and processing
-
-
-
-3. **API Integration**
-   - RESTful API communication with the backend
-   - Proper error handling and retry mechanisms
-   - Progress tracking for long-running operations
-
-### Backend Architecture
-
-The backend is implemented in Go. The system is organized into several key packages:
-
-1. **Core Packages**
-   - `embeddings`: Handles image processing and feature extraction using ResNet50
-   - `clustering`: Implements hierarchical clustering with Ward's method
-   - `ai`: Manages integration with various AI services (AWS Bedrock, Rekognition)
-
-2. **AI Service Integration**
-   - AWS Rekognition for image labeling
-   - AWS Bedrock integration with three AI models:
-     - Claude 3.5 Haiku: Fast, efficient title generation
-     - Claude 3.5 Sonnet: More sophisticated descriptions
-     - Amazon Nova Micro: Alternative title generation
-
-3. **Image Processing Pipeline**
-   - OpenCV integration for image preprocessing
-
-
-   - ResNet50 implementation using ONNX format
-   - Efficient caching system for embeddings and labels
-
-### Data Flow Architecture
-
-The system processes images through several stages:
-
-
-
-1. **Upload Stage**
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-   ```
-   User Upload → Frontend Validation → Backend Storage
-   ```
-
-2. **Processing Stage**
-   ```
-   Image → Preprocessing → ResNet50 Embedding → AWS Rekognition → Combined Feature Vector
-   ```
-
-3. **Clustering Stage**
-   ```
-   Feature Vectors → Hierarchical Clustering → Size-Constrained Clusters
-   ```
-
-4. **Description Stage**
-   ```
-   Cluster Features → AWS Bedrock → Generated Titles and Descriptions
-   ```
-
-## Implementation Details
-
-### Image Processing
-
-The system uses a sophisticated image processing pipeline:
-
-```go
-// PreprocessImage handles image normalization and resizing
-func PreprocessImage(imagePath string) (gocv.Mat, error) {
-    // Load and validate image
-    img := gocv.IMRead(imagePath, gocv.IMReadColor)
-    
-    // Resize to ResNet50 input size (224x224)
-    resized := gocv.NewMat()
-    gocv.Resize(img, &resized, image.Pt(224, 224), 0, 0, gocv.InterpolationLinear)
-    
-    // Convert to RGB and normalize
-    rgb := gocv.NewMat()
-    gocv.CvtColor(resized, &rgb, gocv.ColorBGRToRGB)
-    
-    // Create normalized blob
-    return gocv.BlobFromImage(rgb, 1.0/255.0, image.Pt(224, 224), 
-        gocv.NewScalar(0, 0, 0, 0), false, false)
-}
+```
+Upload images
+    ↓
+CLIP ViT-L/14 ONNX  →  768-dim semantic embeddings per image
+    ↓
+Ward hierarchical clustering  →  min/max size-constrained groups
+    ↓
+Ollama vision LLM  →  title + catchy phrase per cluster (3 rep images sent)
+    ↓
+JSON API  →  React frontend renders inline
 ```
 
-### Clustering Algorithm
+**Why CLIP over ResNet/DINOv2:** CLIP's contrastive text-image training produces a semantically-organized embedding space — images of the same *concept* cluster together even if they look different visually. ResNet produces visual similarity; DINOv2 is good for re-identification. CLIP is the right choice for "what is this about" clustering.
 
-The clustering implementation uses Ward's method with size constraints:
+**Why Ward over HDBSCAN:** Ward guarantees every image lands in a cluster and supports hard min/max size constraints. HDBSCAN produces noise points (unassigned images) and can't enforce a max cluster size.
 
-```go
-// PerformClusteringWithConstraints implements hierarchical clustering
-func PerformClusteringWithConstraints(embeddings [][]float32, 
-    productReferenceIDs []string, minSize, maxSize int) (map[int][]string, bool) {
-    
-    // Calculate optimal number of clusters
-    nClusters, err := CalculateOptimalClusters(totalItems, minSize, maxSize)
-    
-    // Initialize clusters
-    clusters := make([]Cluster, totalItems)
-    for i := 0; i < totalItems; i++ {
-        clusters[i] = NewCluster(i, embeddings[i])
-    }
-    
-    // Perform hierarchical clustering
-    distanceMatrix := ComputeInitialDistanceMatrix(clusters)
-    for len(clusters) > nClusters {
-        i, j := FindClosestClusters(distanceMatrix)
-        if clusters[i].Size + clusters[j].Size <= maxSize {
-            newCluster := MergeClusters(clusters[i], clusters[j])
-            // Update clusters and distance matrix
-        }
-    }
-    
-    return ConvertToClusterMap(clusters, productReferenceIDs), true
-}
+---
+
+## Prerequisites
+
+**macOS:**
+```bash
+brew install onnxruntime ollama
+ollama pull llava:7b          # 4.7 GB vision model
+bash scripts/download_model.sh # ~1.2 GB CLIP model
 ```
 
-## Building and Deployment
+**Linux:** Download ONNX Runtime from [github.com/microsoft/onnxruntime/releases](https://github.com/microsoft/onnxruntime/releases) (v1.20.1, `linux-x64` or `linux-aarch64`), extract the `.so`, set `ONNXRUNTIME_LIB_PATH`. Then install Ollama and run the model download script.
 
-### Local Development Setup
+---
 
-1. **Prerequisites Installation**
-   ```bash
-   # Install Go dependencies
-   go mod download
-   
-   # Install OpenCV
-   wget -q https://github.com/opencv/opencv/archive/4.6.0.zip
-   unzip 4.6.0.zip && cd opencv-4.6.0
-   mkdir build && cd build
-   cmake -D CMAKE_BUILD_TYPE=RELEASE -D CMAKE_INSTALL_PREFIX=/usr/local ..
-   make -j8
-   sudo make install
-   
-   # Install Node.js dependencies
-   cd frontend
-   npm install
-   ```
+## Running
 
-2. **Environment Configuration**
-   Create a `.env` file:
-   ```
-   AWS_ACCESS_KEY_ID=your_access_key
-   AWS_SECRET_ACCESS_KEY=your_secret_key
-   AWS_REGION=us-west-2
-   MODEL_PATH=/path/to/resnet50-v1-7.onnx
-   ```
-
-3. **Development Server**
-   ```bash
-   # Start backend
-   go run main.go
-   
-   # Start frontend
-   cd frontend
-   npm start
-   ```
-
-### Docker Deployment
-
-The project includes a multi-stage Dockerfile for optimal production deployment:
-
-```dockerfile
-# Build backend
-FROM golang:1.23rc1 AS backend-builder
-WORKDIR /app
-COPY . .
-RUN go mod download
-RUN CGO_ENABLED=1 GOOS=linux go build -o imageclust main.go
-
-# Build frontend
-FROM node:18 AS frontend-builder
-WORKDIR /app/frontend
-COPY frontend/package*.json ./
-RUN npm install
-COPY frontend/ ./
-RUN npm run build
-
-# Final stage
-FROM debian:bookworm-slim
-WORKDIR /app
-COPY --from=backend-builder /app/imageclust ./
-COPY --from=backend-builder /app/resnet50-v1-7.onnx ./
-COPY --from=frontend-builder /app/frontend/build ./frontend/build
+```bash
+go build -o imageclust .
+OLLAMA_MODEL=llava:7b ./imageclust
+# open http://localhost:8080
 ```
 
-Deploy using:
+Environment variables (all optional):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ONNXRUNTIME_LIB_PATH` | `/opt/homebrew/lib/libonnxruntime.dylib` | Path to ORT shared library |
+| `CLIP_MODEL_PATH` | `models/clip-vit-large-patch14/vision_model.onnx` | CLIP ONNX model |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama API endpoint |
+| `OLLAMA_MODEL` | `llama3.2-vision:11b` | Vision-capable model name |
+
+---
+
+## Docker
+
+The Dockerfile builds a self-contained image with the Go server and React frontend. Ollama must run on the host (or another container) — the default `OLLAMA_HOST` is `http://host.docker.internal:11434`.
+
 ```bash
 docker build -t imageclust .
-docker run -p 8080:8080 -v /path/to/data:/app/data imageclust
+docker run -p 8080:8080 \
+  -v /path/to/models:/app/models \
+  imageclust
 ```
 
-## Current Limitations and Future Enhancements
+The CLIP model (~1.2 GB) is mounted at runtime via the volume. To bake it in instead, uncomment the `COPY models/` line in the Dockerfile.
 
-### Limitations
+Cross-platform builds with `--platform` work correctly (arm64 → `aarch64`, amd64 → `x64` ORT release naming).
 
-1. **Performance Constraints**
-   - CPU-bound processing for ResNet50
-   - Memory requirements scale with image collection size
-   - Network latency for AWS service calls
+---
 
-2. **Clustering Constraints**
-   - Fixed minimum and maximum cluster sizes
-   - Cannot modify clusters after formation
-   - Limited to static feature extraction
+## Benchmarks
 
-### Future Enhancements
+Hardware: Apple M4 Pro, 14-core, 64 GB RAM. CPU inference only (no GPU/CoreML EP).
 
-1. **Technical Improvements**
-   - Implement GPU acceleration for ResNet50
-   - Add distributed processing capability
-   - Introduce progressive loading for large datasets
-   - Implement real-time clustering updates
+### CLIP embedding — `go test -bench=BenchmarkEmbed ./internal/clip/`
 
-2. **Feature Enhancements**
-   - Custom embedding model support
-   - User-defined clustering criteria
-   - Interactive cluster refinement
-   - Advanced visualization options
-   - Export capabilities in various formats
+| | |
+|---|---|
+| Time per image | ~432 ms |
+| Throughput | ~2.3 images/sec |
+| Memory per call | ~3.7 MB |
 
-3. **Integration Possibilities**
-   - Content management system plugins
-   - Cloud storage provider integration
-   - API authentication and rate limiting
-   - Webhook support for processing events
+Inference is serialized (one ORT session, mutex-protected). Preprocessing (decode → resize → NCHW normalization) runs in parallel across the worker pool; the ORT session is the bottleneck.
 
-## Use Cases
+### Ward clustering — `go test -bench=. ./internal/clustering/`
 
-1. **Digital Asset Management**
-   - Organize product photography
-   - Manage marketing assets
-   - Archive historical images
+| Images | Time | Memory |
+|--------|------|--------|
+| 10 | 0.15 ms | 0.3 MB |
+| 20 | 0.54 ms | 1.2 MB |
+| 50 | 3.5 ms | 7.4 MB |
+| 100 | 14 ms | 29 MB |
+| 200 | 55 ms | 115 MB |
 
-2. **Content Creation**
-   - Group similar content for social media
-   - Organize stock photo collections
-   - Manage design assets
+O(n²) distance matrix. Negligible relative to CLIP and Ollama.
 
+### End-to-end HTTP pipeline
 
+| Images | Clusters | Total time | CLIP share | Ollama share |
+|--------|----------|-----------|-----------|-------------|
+| 10 | 2 | ~23 s | ~4 s | ~19 s |
+| 20 | 4 | ~51 s | ~9 s | ~42 s |
 
+**Bottleneck is Ollama** (~10 s/cluster, sequential). CLIP is ~17% of total time for 20 images. To speed things up: run a smaller vision model (`llava:7b` is already fast; `moondream` is faster but lower quality), or parallelize cluster title generation.
 
+---
 
+## Project structure
 
+```
+internal/
+  clip/       — CLIP ViT-L/14 ONNX inference (AdvancedSession, mutex-serialized)
+  ollama/     — Direct HTTP client for Ollama /api/generate (no SDK)
+  workflow/   — Pipeline orchestration: embed → cluster → title
+  clustering/ — Ward hierarchical clustering with min/max size constraints
+  handlers/   — HTTP layer: multipart upload, JSON API, session store
+  models/     — Shared types (UploadedImage, ClusterDetails)
+  utils/      — Filename sanitization
+frontend/
+  src/components/
+    ImageUploadForm.jsx  — Upload form with drag-and-drop
+    ClusterResults.jsx   — Inline cluster grid renderer
+scripts/
+  download_model.sh  — Fetch CLIP ONNX from HuggingFace
+  benchmark.sh       — End-to-end pipeline timing script
+```
 
+---
 
+## API
 
+**POST /api/cluster** — multipart form
 
+| Field | Type | Description |
+|-------|------|-------------|
+| `images` | file (multiple) | Image files to cluster |
+| `minClusterSize` | int | Minimum images per cluster (default 3) |
+| `maxClusterSize` | int | Maximum images per cluster (default 6) |
 
-3. **Data Analysis**
-   - Visual data exploration
-   - Pattern recognition in image sets
-   - Content auditing
+Response:
+```json
+{
+  "status": "success",
+  "sessionId": "abc123",
+  "clusters": [
+    {
+      "id": "Cluster-0",
+      "title": "Serene rural sunset",
+      "catchy_phrase": "Nature's canvas of tranquility",
+      "images": ["img_0.jpg", "img_3.jpg", "img_7.jpg"]
+    }
+  ]
+}
+```
 
-## Contributing
+**GET /api/image/{filename}?session=\<sessionId\>** — serves an uploaded image. Sessions expire after 1 hour.
 
-I welcome contributions! Please follow these steps:
-
-1. Fork the repository
-2. Create a feature branch
-3. Implement your changes
-4. Add tests if applicable
-5. Submit a pull request
-
-Please refer to our contribution guidelines for more details.
+---
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-This project builds upon several open-source technologies and services:
-
-- OpenCV for image processing
-- React and Tailwind CSS for frontend development
-- AWS SDK for cloud services integration
-- Go community for excellent packages and tools
-
-For questions, issues, or support, please open an issue in the GitHub repository.
-
-
-
-
-
-
-
-
-
-
-
+MIT
