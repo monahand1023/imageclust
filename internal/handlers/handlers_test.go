@@ -1,11 +1,16 @@
 package handlers
 
 import (
+	"imageclust/internal/models"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/gorilla/mux"
 )
 
 // --- sessionStore tests -------------------------------------------------
@@ -153,6 +158,73 @@ func TestRespondWithError(t *testing.T) {
 	}
 }
 
+// --- parseClusterSizes -------------------------------------------------
+
+func TestParseClusterSizes_Defaults(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/", nil)
+	min, max := parseClusterSizes(r, 3, 6)
+	if min != 3 || max != 6 {
+		t.Errorf("got %d,%d; want 3,6", min, max)
+	}
+}
+
+func TestParseClusterSizes_ValidCustom(t *testing.T) {
+	r := httptest.NewRequest(http.MethodPost, "/?minClusterSize=4&maxClusterSize=10", nil)
+	min, max := parseClusterSizes(r, 3, 6)
+	if min != 4 || max != 10 {
+		t.Errorf("got %d,%d; want 4,10", min, max)
+	}
+}
+
+func TestParseClusterSizes_MinBelowFloor(t *testing.T) {
+	// minClusterSize=1 is below the floor of 2 → falls back to default 3.
+	r := httptest.NewRequest(http.MethodPost, "/?minClusterSize=1&maxClusterSize=8", nil)
+	min, _ := parseClusterSizes(r, 3, 6)
+	if min != 3 {
+		t.Errorf("min below 2 should use default 3, got %d", min)
+	}
+}
+
+func TestParseClusterSizes_MaxBelowMin(t *testing.T) {
+	// maxClusterSize=3 is less than minClusterSize=5 → falls back to default 6.
+	r := httptest.NewRequest(http.MethodPost, "/?minClusterSize=5&maxClusterSize=3", nil)
+	_, max := parseClusterSizes(r, 3, 6)
+	if max != 6 {
+		t.Errorf("max below min should use default 6, got %d", max)
+	}
+}
+
+// --- buildClusterResponse ----------------------------------------------
+
+func TestBuildClusterResponse(t *testing.T) {
+	details := map[string]models.ClusterDetails{
+		"Cluster-0": {Title: "Animals", CatchyPhrase: "Furry friends", Images: []string{"a.jpg", "b.jpg"}},
+		"Cluster-1": {Title: "Cities", CatchyPhrase: "Urban life", Images: []string{"c.jpg"}},
+	}
+	resp := buildClusterResponse("sess123", details)
+
+	if resp.Status != "success" {
+		t.Errorf("Status = %q, want success", resp.Status)
+	}
+	if resp.SessionID != "sess123" {
+		t.Errorf("SessionID = %q, want sess123", resp.SessionID)
+	}
+	if len(resp.Clusters) != 2 {
+		t.Fatalf("len(Clusters) = %d, want 2", len(resp.Clusters))
+	}
+	// Verify all cluster IDs and image lists are present.
+	byID := make(map[string]clusterPayload)
+	for _, c := range resp.Clusters {
+		byID[c.ID] = c
+	}
+	if c, ok := byID["Cluster-0"]; !ok || c.Title != "Animals" || len(c.Images) != 2 {
+		t.Errorf("Cluster-0 unexpected: %+v", byID["Cluster-0"])
+	}
+	if c, ok := byID["Cluster-1"]; !ok || c.Title != "Cities" || len(c.Images) != 1 {
+		t.Errorf("Cluster-1 unexpected: %+v", c)
+	}
+}
+
 // --- ServeImage / ClusterAndGenerate (handler method) ---------------
 
 func TestServeImage_MissingSession(t *testing.T) {
@@ -175,6 +247,29 @@ func TestServeImage_InvalidSession(t *testing.T) {
 	}
 }
 
+func TestServeImage_PathTraversal(t *testing.T) {
+	// The path traversal guard (filepath.Rel check) must reject ".." names even
+	// though SanitizeFilename allows dots. These are the names mux.Vars would
+	// supply for traversal attempts that survive URL routing.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "images"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	s := newTestStore()
+	s.set("sess", dir)
+	h := &Handlers{store: s}
+
+	for _, name := range []string{"..", "../sibling", "../../etc/passwd"} {
+		req := httptest.NewRequest(http.MethodGet, "/api/image/"+name+"?session=sess", nil)
+		req = mux.SetURLVars(req, map[string]string{"imageName": name})
+		w := httptest.NewRecorder()
+		h.ServeImage(w, req)
+		if w.Code == http.StatusOK {
+			t.Errorf("traversal %q: got 200, want non-200", name)
+		}
+	}
+}
+
 func TestClusterAndGenerate_WrongMethod(t *testing.T) {
 	h := &Handlers{store: newTestStore()}
 	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
@@ -193,5 +288,43 @@ func TestSpaHandler_Fields(t *testing.T) {
 	h := SpaHandler{StaticPath: "/var/www", IndexPath: "index.html"}
 	if h.StaticPath != "/var/www" || h.IndexPath != "index.html" {
 		t.Error("SpaHandler fields not set correctly")
+	}
+}
+
+func TestSpaHandler_FallsBackToIndex(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>app</html>"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	h := SpaHandler{StaticPath: dir, IndexPath: "index.html"}
+
+	req := httptest.NewRequest(http.MethodGet, "/some/unknown/route", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("unknown route: code = %d, want 200", w.Code)
+	}
+	if body := w.Body.String(); body != "<html>app</html>" {
+		t.Errorf("body = %q, want index.html content", body)
+	}
+}
+
+func TestSpaHandler_ServesExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "index.html"), []byte("<html>app</html>"), 0644)
+	os.WriteFile(filepath.Join(dir, "app.js"), []byte("var x=1;"), 0644)
+
+	h := SpaHandler{StaticPath: dir, IndexPath: "index.html"}
+
+	req := httptest.NewRequest(http.MethodGet, "/app.js", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("existing file: code = %d, want 200", w.Code)
+	}
+	if body := w.Body.String(); body != "var x=1;" {
+		t.Errorf("body = %q, want app.js content", body)
 	}
 }
