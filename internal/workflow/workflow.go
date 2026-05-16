@@ -174,8 +174,15 @@ func (ic *ImageCluster) generateEmbeddings(items []itemRecord) ([][]float32, []s
 	return embeddingsList, itemIDs, nil
 }
 
-// buildClusterDetails generates titles via Ollama for each cluster.
+type clusterTitleResult struct {
+	key          string
+	details      models.ClusterDetails
+}
+
+// buildClusterDetails generates titles via Ollama for each cluster in parallel.
 // It picks up to 3 representative images (nearest to the cluster centroid).
+// Ollama will queue requests it can't run concurrently; set OLLAMA_NUM_PARALLEL
+// on the Ollama server to control how many inference slots it uses.
 func (ic *ImageCluster) buildClusterDetails(
 	ctx context.Context,
 	clusters map[int][]string,
@@ -189,44 +196,59 @@ func (ic *ImageCluster) buildClusterDetails(
 		idxByID[item.ID] = i
 	}
 
-	clusterDetails := make(map[string]models.ClusterDetails, len(clusters))
+	resultCh := make(chan clusterTitleResult, len(clusters))
+	var wg sync.WaitGroup
 
 	for clusterID, itemIDs := range clusters {
-		key := fmt.Sprintf("Cluster-%d", clusterID)
+		wg.Add(1)
+		go func(clusterID int, itemIDs []string) {
+			defer wg.Done()
+			key := fmt.Sprintf("Cluster-%d", clusterID)
 
-		// Gather image paths and embeddings for this cluster.
-		imagePaths := make([]string, 0, len(itemIDs))
-		clusterEmbs := make([][]float32, 0, len(itemIDs))
-		for _, id := range itemIDs {
-			if item, ok := itemByID[id]; ok {
-				imagePaths = append(imagePaths, item.ImagePath)
-				if idx, ok2 := idxByID[id]; ok2 {
-					clusterEmbs = append(clusterEmbs, embeddingsList[idx])
+			// Gather image paths and embeddings for this cluster.
+			imagePaths := make([]string, 0, len(itemIDs))
+			clusterEmbs := make([][]float32, 0, len(itemIDs))
+			for _, id := range itemIDs {
+				if item, ok := itemByID[id]; ok {
+					imagePaths = append(imagePaths, item.ImagePath)
+					if idx, ok2 := idxByID[id]; ok2 {
+						clusterEmbs = append(clusterEmbs, embeddingsList[idx])
+					}
 				}
 			}
-		}
 
-		// Pick up to 3 images closest to the cluster centroid.
-		representativeImagePaths := selectRepresentatives(imagePaths, clusterEmbs, 3)
+			// Pick up to 3 images closest to the cluster centroid.
+			representativeImagePaths := selectRepresentatives(imagePaths, clusterEmbs, 3)
 
-		title, catchyPhrase, err := ic.OllamaClient.GenerateClusterTitle(ctx, representativeImagePaths, 3, 3)
-		if err != nil {
-			log.Printf("ImageCluster: title generation failed for %s: %v — using fallback", key, err)
-			title = fmt.Sprintf("Cluster %d", clusterID)
-			catchyPhrase = ""
-		}
+			title, catchyPhrase, err := ic.OllamaClient.GenerateClusterTitle(ctx, representativeImagePaths, 3, 3)
+			if err != nil {
+				log.Printf("ImageCluster: title generation failed for %s: %v — using fallback", key, err)
+				title = fmt.Sprintf("Cluster %d", clusterID)
+				catchyPhrase = ""
+			}
 
-		// Store only the base filename for the API response.
-		imageFilenames := make([]string, len(imagePaths))
-		for i, p := range imagePaths {
-			imageFilenames[i] = filepath.Base(p)
-		}
+			// Store only the base filename for the API response.
+			imageFilenames := make([]string, len(imagePaths))
+			for i, p := range imagePaths {
+				imageFilenames[i] = filepath.Base(p)
+			}
 
-		clusterDetails[key] = models.ClusterDetails{
-			Title:        title,
-			CatchyPhrase: catchyPhrase,
-			Images:       imageFilenames,
-		}
+			resultCh <- clusterTitleResult{
+				key: key,
+				details: models.ClusterDetails{
+					Title:        title,
+					CatchyPhrase: catchyPhrase,
+					Images:       imageFilenames,
+				},
+			}
+		}(clusterID, itemIDs)
+	}
+
+	go func() { wg.Wait(); close(resultCh) }()
+
+	clusterDetails := make(map[string]models.ClusterDetails, len(clusters))
+	for r := range resultCh {
+		clusterDetails[r.key] = r.details
 	}
 
 	return clusterDetails, nil
