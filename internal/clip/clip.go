@@ -4,6 +4,7 @@ package clip
 import (
 	"fmt"
 	"image"
+	"image/draw"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
@@ -11,8 +12,8 @@ import (
 	"os"
 	"sync"
 
-	"github.com/disintegration/imaging"
 	ort "github.com/yalue/onnxruntime_go"
+	xdraw "golang.org/x/image/draw"
 )
 
 const (
@@ -145,8 +146,9 @@ func preprocessImage(imagePath string) ([]float32, error) {
 		return nil, fmt.Errorf("clip: decode %s: %w", imagePath, err)
 	}
 
-	// imaging.Resize returns *image.NRGBA; Pix layout is [R, G, B, A, R, G, B, A, ...].
-	resized := imaging.Resize(img, inputSize, inputSize, imaging.Lanczos)
+	// Scale to 224×224 using CatmullRom (Lanczos-quality bicubic); result is NRGBA.
+	resized := image.NewNRGBA(image.Rect(0, 0, inputSize, inputSize))
+	xdraw.CatmullRom.Scale(resized, resized.Bounds(), img, img.Bounds(), draw.Over, nil)
 
 	stride := inputSize * inputSize
 	data := make([]float32, 3*stride)
