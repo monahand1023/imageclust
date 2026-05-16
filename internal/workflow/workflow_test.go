@@ -5,145 +5,66 @@ import (
 	"testing"
 )
 
-func TestMaxWorkersConfiguration(t *testing.T) {
-	// maxWorkers should be set to number of CPUs
-	expected := runtime.NumCPU()
-	if maxWorkers != expected {
-		t.Errorf("maxWorkers = %d, want %d (runtime.NumCPU())", maxWorkers, expected)
+func TestMaxWorkers(t *testing.T) {
+	if maxWorkers != runtime.NumCPU() {
+		t.Errorf("maxWorkers = %d, want %d", maxWorkers, runtime.NumCPU())
 	}
-}
-
-func TestMaxWorkersPositive(t *testing.T) {
 	if maxWorkers < 1 {
-		t.Errorf("maxWorkers should be at least 1, got %d", maxWorkers)
+		t.Errorf("maxWorkers must be ≥ 1, got %d", maxWorkers)
 	}
 }
 
-func TestEmbeddingJobStruct(t *testing.T) {
-	job := embeddingJob{
-		index: 5,
-		item: ItemDetails{
-			ID:        "test-id",
-			ImagePath: "/path/to/image.jpg",
-			Labels:    []string{"label1", "label2"},
-		},
-	}
-
-	if job.index != 5 {
-		t.Errorf("expected index 5, got %d", job.index)
-	}
-	if job.item.ID != "test-id" {
-		t.Errorf("expected ID 'test-id', got %s", job.item.ID)
+func TestEmbJobStruct(t *testing.T) {
+	item := itemRecord{ID: "img_0", ImagePath: "/tmp/a.jpg"}
+	job := embJob{index: 2, item: item}
+	if job.index != 2 || job.item.ID != "img_0" {
+		t.Errorf("embJob fields not set correctly: %+v", job)
 	}
 }
 
-func TestEmbeddingResultStruct(t *testing.T) {
-	result := embeddingResult{
-		index:     3,
+func TestEmbResultStruct(t *testing.T) {
+	res := embResult{
+		index:     1,
+		itemID:    "img_1",
 		embedding: []float32{0.1, 0.2, 0.3},
-		itemID:    "item-3",
-		err:       nil,
 	}
-
-	if result.index != 3 {
-		t.Errorf("expected index 3, got %d", result.index)
-	}
-	if len(result.embedding) != 3 {
-		t.Errorf("expected 3 embeddings, got %d", len(result.embedding))
-	}
-	if result.itemID != "item-3" {
-		t.Errorf("expected itemID 'item-3', got %s", result.itemID)
-	}
-	if result.err != nil {
-		t.Errorf("expected nil error, got %v", result.err)
+	if res.index != 1 || res.itemID != "img_1" || len(res.embedding) != 3 {
+		t.Errorf("embResult fields wrong: %+v", res)
 	}
 }
 
-func TestItemDetailsStruct(t *testing.T) {
-	item := ItemDetails{
-		ID:        "img_1",
-		ImagePath: "/tmp/images/test.jpg",
-		Labels:    []string{"Person", "Clothing", "Fashion"},
-	}
-
-	if item.ID != "img_1" {
-		t.Errorf("expected ID 'img_1', got %s", item.ID)
-	}
-	if item.ImagePath != "/tmp/images/test.jpg" {
-		t.Errorf("expected ImagePath '/tmp/images/test.jpg', got %s", item.ImagePath)
-	}
-	if len(item.Labels) != 3 {
-		t.Errorf("expected 3 labels, got %d", len(item.Labels))
+func TestSelectRepresentatives_FewerThanK(t *testing.T) {
+	paths := []string{"a.jpg", "b.jpg"}
+	embs := [][]float32{{1, 0}, {0, 1}}
+	got := selectRepresentatives(paths, embs, 5)
+	if len(got) != 2 {
+		t.Errorf("expected 2 (all), got %d", len(got))
 	}
 }
 
-func TestMakeItemMap(t *testing.T) {
-	items := []ItemDetails{
-		{ID: "a", ImagePath: "/path/a.jpg", Labels: []string{"l1"}},
-		{ID: "b", ImagePath: "/path/b.jpg", Labels: []string{"l2"}},
-		{ID: "c", ImagePath: "/path/c.jpg", Labels: []string{"l3"}},
-	}
-
-	itemMap := makeItemMap(items)
-
-	if len(itemMap) != 3 {
-		t.Errorf("expected 3 items in map, got %d", len(itemMap))
-	}
-
-	if item, ok := itemMap["a"]; !ok {
-		t.Error("expected item 'a' in map")
-	} else if item.ImagePath != "/path/a.jpg" {
-		t.Errorf("expected ImagePath '/path/a.jpg', got %s", item.ImagePath)
-	}
-
-	if _, ok := itemMap["nonexistent"]; ok {
-		t.Error("expected 'nonexistent' to not be in map")
+func TestSelectRepresentatives_Empty(t *testing.T) {
+	got := selectRepresentatives(nil, nil, 3)
+	if got != nil {
+		t.Errorf("expected nil for empty input, got %v", got)
 	}
 }
 
-func TestFormatLabels(t *testing.T) {
-	labelsSet := map[string]struct{}{
-		"Person":   {},
-		"Clothing": {},
+func TestSelectRepresentatives_PicksClosest(t *testing.T) {
+	// Three images; the first two are aligned with [1,0], the third is
+	// perpendicular. With k=2 we expect the first two selected.
+	paths := []string{"a.jpg", "b.jpg", "c.jpg"}
+	embs := [][]float32{
+		{1, 0},  // aligned with centroid direction
+		{0.9, 0.1},
+		{0, 1},  // perpendicular — should be excluded
 	}
-
-	result := formatLabels(labelsSet)
-
-	// Since map iteration order is not guaranteed, check both labels exist
-	if len(result) == 0 {
-		t.Error("expected non-empty result")
+	got := selectRepresentatives(paths, embs, 2)
+	if len(got) != 2 {
+		t.Errorf("expected 2 representatives, got %d", len(got))
 	}
-
-	// Check that it contains expected labels (order may vary)
-	containsPerson := false
-	containsClothing := false
-	if result == "Person, Clothing" || result == "Clothing, Person" {
-		containsPerson = true
-		containsClothing = true
-	}
-
-	if !containsPerson || !containsClothing {
-		t.Errorf("expected result to contain both labels, got: %s", result)
-	}
-}
-
-func TestGetItemIDs(t *testing.T) {
-	items := []ItemDetails{
-		{ID: "id1"},
-		{ID: "id2"},
-		{ID: "id3"},
-	}
-
-	ids := getItemIDs(items)
-
-	if len(ids) != 3 {
-		t.Errorf("expected 3 IDs, got %d", len(ids))
-	}
-
-	for i, id := range ids {
-		expected := items[i].ID
-		if id != expected {
-			t.Errorf("expected ID at index %d to be %s, got %s", i, expected, id)
+	for _, p := range got {
+		if p == "c.jpg" {
+			t.Error("c.jpg should not be selected as representative")
 		}
 	}
 }

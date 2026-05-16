@@ -1,306 +1,289 @@
 package workflow
 
 import (
+	"context"
 	"fmt"
-	"imageclust/internal/ai"
+	"imageclust/internal/clip"
 	"imageclust/internal/clustering"
 	"imageclust/internal/embeddings"
 	"imageclust/internal/models"
-	"imageclust/internal/rekognition"
+	"imageclust/internal/ollama"
 	"imageclust/internal/utils"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 )
 
-// maxWorkers limits concurrent goroutines for resource-intensive operations
 var maxWorkers = runtime.NumCPU()
 
+// ImageCluster orchestrates the end-to-end pipeline for a single request.
 type ImageCluster struct {
-	TempDir         string
-	RekognitionSvc  *rekognition.RekognitionService
-	EmbeddingsModel *embeddings.AppContext
-	MinClusterSize  int
-	MaxClusterSize  int
+	TempDir        string
+	ClipModel      *clip.Model
+	OllamaClient   *ollama.Client
+	MinClusterSize int
+	MaxClusterSize int
 }
 
-type ItemDetails struct {
+// NewImageCluster creates an ImageCluster. clipModel and ollamaClient are
+// shared singletons loaded at startup — not created per request.
+func NewImageCluster(minClusterSize, maxClusterSize int, tempDir string, clipModel *clip.Model, ollamaClient *ollama.Client) *ImageCluster {
+	log.Printf("ImageCluster init: min=%d max=%d clusters, tempDir=%s", minClusterSize, maxClusterSize, tempDir)
+	return &ImageCluster{
+		TempDir:        tempDir,
+		ClipModel:      clipModel,
+		OllamaClient:   ollamaClient,
+		MinClusterSize: minClusterSize,
+		MaxClusterSize: maxClusterSize,
+	}
+}
+
+type itemRecord struct {
 	ID        string
 	ImagePath string
-	Labels    []string
 }
 
-func NewImageCluster(minClusterSize, maxClusterSize int, tempDir string) (*ImageCluster, error) {
-	log.Printf("Initializing ImageCluster with min=%d, max=%d clusters", minClusterSize, maxClusterSize)
-
-	appCtx := &embeddings.AppContext{
-		ImageDir:      filepath.Join(tempDir, "images"),
-		CacheDir:      filepath.Join(tempDir, "cache"),
-		LabelSet:      make(map[string]int),
-		LabelsMapping: make(map[string][]string),
-	}
-
-	rekogSvc, err := rekognition.NewRekognitionService("us-east-1", appCtx.CacheDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize RekognitionService: %v", err)
-	}
-
-	modelPath := "resnet50-v1-7.onnx"
-	net, err := embeddings.LoadPretrainedModelONNX(modelPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load ResNet50 ONNX model: %v", err)
-	}
-
-	appCtx.Net = net
-
-	return &ImageCluster{
-		TempDir:         tempDir,
-		RekognitionSvc:  rekogSvc,
-		EmbeddingsModel: appCtx,
-		MinClusterSize:  minClusterSize,
-		MaxClusterSize:  maxClusterSize,
-	}, nil
-}
-
-func (ic *ImageCluster) Run(uploadedImages []models.UploadedImage) (map[string]models.ClusterDetails, string, error) {
+// Run executes the full pipeline and returns a map of cluster key → ClusterDetails.
+func (ic *ImageCluster) Run(uploadedImages []models.UploadedImage) (map[string]models.ClusterDetails, error) {
 	startTime := time.Now()
-	log.Println("Starting ImageCluster run...")
+	log.Println("ImageCluster: starting run")
 
-	if err := ic.createDirectories(); err != nil {
-		return nil, "", err
+	imageDir := filepath.Join(ic.TempDir, "images")
+	if err := os.MkdirAll(imageDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create image dir: %w", err)
 	}
 
-	itemDetails, err := ic.processImages(uploadedImages)
+	items, err := ic.saveImages(uploadedImages, imageDir)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
-	err = embeddings.BuildLabelSet(getItemIDs(itemDetails), ic.RekognitionSvc, ic.EmbeddingsModel)
+	embeddingsList, itemIDs, err := ic.generateEmbeddings(items)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to build label set: %v", err)
-	}
-
-	embeddingsList, itemIDs, err := ic.createEmbeddings(itemDetails)
-	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 
 	clusters, err := clustering.PerformClusteringWithConstraints(
-		embeddingsList,
-		itemIDs,
-		ic.MinClusterSize,
-		ic.MaxClusterSize,
+		embeddingsList, itemIDs, ic.MinClusterSize, ic.MaxClusterSize,
 	)
 	if err != nil {
-		return nil, "", fmt.Errorf("clustering failed: %w", err)
+		return nil, fmt.Errorf("clustering failed: %w", err)
 	}
 
-	clusterDetails := ic.prepareClusterDetails(clusters, itemDetails)
-
-	htmlOutputPath, err := utils.GenerateHTMLOutput(clusterDetails, ic.TempDir)
+	details, err := ic.buildClusterDetails(clusters, items, embeddingsList)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to generate HTML output: %v", err)
+		return nil, err
 	}
 
-	log.Printf("Completed clustering in %v", time.Since(startTime))
-	return clusterDetails, htmlOutputPath, nil
+	log.Printf("ImageCluster: completed in %v", time.Since(startTime))
+	return details, nil
 }
 
-func (ic *ImageCluster) createDirectories() error {
-	dirs := []string{ic.EmbeddingsModel.ImageDir, ic.EmbeddingsModel.CacheDir}
-	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return fmt.Errorf("failed to create directory %s: %v", dir, err)
-		}
-	}
-	return nil
-}
-
-func (ic *ImageCluster) processImages(uploadedImages []models.UploadedImage) ([]ItemDetails, error) {
-	itemDetails := make([]ItemDetails, len(uploadedImages))
-
+// saveImages writes uploaded image bytes to disk and returns item records.
+func (ic *ImageCluster) saveImages(uploadedImages []models.UploadedImage, imageDir string) ([]itemRecord, error) {
+	items := make([]itemRecord, 0, len(uploadedImages))
 	for i, img := range uploadedImages {
-		imagePath := filepath.Join(ic.EmbeddingsModel.ImageDir, img.Filename)
+		imagePath := filepath.Join(imageDir, utils.SanitizeFilename(img.Filename))
 		if err := os.WriteFile(imagePath, img.Data, 0644); err != nil {
-			return nil, fmt.Errorf("failed to save image %s: %v", img.Filename, err)
+			return nil, fmt.Errorf("failed to save image %s: %w", img.Filename, err)
 		}
-
-		labels, err := ic.RekognitionSvc.DetectLabels(imagePath, 10, 75.0)
-		if err != nil {
-			return nil, fmt.Errorf("failed to detect labels for %s: %v", img.Filename, err)
-		}
-
-		labelNames := make([]string, len(labels))
-		for j, label := range labels {
-			labelNames[j] = *label.Name
-		}
-
-		itemDetails[i] = ItemDetails{
+		items = append(items, itemRecord{
 			ID:        fmt.Sprintf("img_%d", i),
 			ImagePath: imagePath,
-			Labels:    labelNames,
-		}
+		})
 	}
-
-	return itemDetails, nil
+	return items, nil
 }
 
-// embeddingJob represents a unit of work for the worker pool
-type embeddingJob struct {
+type embJob struct {
 	index int
-	item  ItemDetails
+	item  itemRecord
 }
 
-// embeddingResult represents the result of processing an embedding job
-type embeddingResult struct {
+type embResult struct {
 	index     int
-	embedding []float32
 	itemID    string
+	embedding []float32
 	err       error
 }
 
-func (ic *ImageCluster) createEmbeddings(items []ItemDetails) ([][]float32, []string, error) {
-	embeddingsList := make([][]float32, len(items))
-	itemIDs := make([]string, len(items))
-
-	// Use worker pool to limit concurrency
+// generateEmbeddings runs CLIP inference in a bounded worker pool.
+func (ic *ImageCluster) generateEmbeddings(items []itemRecord) ([][]float32, []string, error) {
+	n := len(items)
 	numWorkers := maxWorkers
-	if len(items) < numWorkers {
-		numWorkers = len(items)
+	if n < numWorkers {
+		numWorkers = n
 	}
 
-	jobs := make(chan embeddingJob, len(items))
-	results := make(chan embeddingResult, len(items))
+	jobs := make(chan embJob, n)
+	results := make(chan embResult, n)
 
-	// Start workers
 	var wg sync.WaitGroup
 	for w := 0; w < numWorkers; w++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for job := range jobs {
-				imageEmbedding, err := embeddings.GetImageEmbedding(ic.EmbeddingsModel, job.item.ImagePath)
-				if err != nil {
-					results <- embeddingResult{
-						index: job.index,
-						err:   fmt.Errorf("failed to generate embedding for %s: %v", job.item.ID, err),
-					}
-					continue
-				}
-
-				labelVector := embeddings.GenerateLabelVector(job.item.Labels, ic.EmbeddingsModel.LabelSet)
-				combinedEmbedding := embeddings.CombineEmbeddings(imageEmbedding, labelVector)
-
-				results <- embeddingResult{
+				emb, err := embeddings.GetEmbedding(ic.ClipModel, job.item.ImagePath)
+				results <- embResult{
 					index:     job.index,
-					embedding: combinedEmbedding,
 					itemID:    job.item.ID,
+					embedding: emb,
+					err:       err,
 				}
 			}
 		}()
 	}
 
-	// Send jobs to workers
 	for i, item := range items {
-		jobs <- embeddingJob{index: i, item: item}
+		jobs <- embJob{index: i, item: item}
 	}
 	close(jobs)
 
-	// Wait for workers to finish and close results channel
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
+	go func() { wg.Wait(); close(results) }()
 
-	// Collect results
+	embeddingsList := make([][]float32, n)
+	itemIDs := make([]string, n)
 	var firstErr error
-	for result := range results {
-		if result.err != nil {
+	for res := range results {
+		if res.err != nil {
 			if firstErr == nil {
-				firstErr = result.err
+				firstErr = res.err
 			}
 			continue
 		}
-		embeddingsList[result.index] = result.embedding
-		itemIDs[result.index] = result.itemID
+		embeddingsList[res.index] = res.embedding
+		itemIDs[res.index] = res.itemID
 	}
-
 	if firstErr != nil {
 		return nil, nil, firstErr
 	}
 
-	log.Printf("Generated embeddings for %d items using %d workers", len(items), numWorkers)
+	log.Printf("ImageCluster: embedded %d images with %d workers", n, numWorkers)
 	return embeddingsList, itemIDs, nil
 }
 
-func (ic *ImageCluster) prepareClusterDetails(clusters map[int][]string, items []ItemDetails) map[string]models.ClusterDetails {
-	clusterDetails := make(map[string]models.ClusterDetails)
-	itemMap := makeItemMap(items)
+// buildClusterDetails generates titles via Ollama for each cluster.
+// It picks up to 3 representative images (nearest to the cluster centroid).
+func (ic *ImageCluster) buildClusterDetails(
+	clusters map[int][]string,
+	items []itemRecord,
+	embeddingsList [][]float32,
+) (map[string]models.ClusterDetails, error) {
+	itemByID := make(map[string]itemRecord, len(items))
+	idxByID := make(map[string]int, len(items))
+	for i, item := range items {
+		itemByID[item.ID] = item
+		idxByID[item.ID] = i
+	}
+
+	clusterDetails := make(map[string]models.ClusterDetails, len(clusters))
+	ctx := context.Background()
 
 	for clusterID, itemIDs := range clusters {
-		clusterKey := fmt.Sprintf("Cluster-%d", clusterID)
-		var details models.ClusterDetails
-		details = details.Init()
+		key := fmt.Sprintf("Cluster-%d", clusterID)
 
-		labelsSet := make(map[string]struct{})
-		var images []string
-
+		// Gather image paths and embeddings for this cluster.
+		imagePaths := make([]string, 0, len(itemIDs))
+		clusterEmbs := make([][]float32, 0, len(itemIDs))
 		for _, id := range itemIDs {
-			if item, exists := itemMap[id]; exists {
-				for _, label := range item.Labels {
-					labelsSet[label] = struct{}{}
+			if item, ok := itemByID[id]; ok {
+				imagePaths = append(imagePaths, item.ImagePath)
+				if idx, ok2 := idxByID[id]; ok2 {
+					clusterEmbs = append(clusterEmbs, embeddingsList[idx])
 				}
-				images = append(images, filepath.Base(item.ImagePath))
 			}
 		}
 
-		details.Labels = formatLabels(labelsSet)
-		details.Images = images
+		// Pick up to 3 images closest to the cluster centroid.
+		representativeImagePaths := selectRepresentatives(imagePaths, clusterEmbs, 3)
 
-		modelOutputs := ai.GenerateTitleAndCatchyPhraseMultiService(details.Labels, 3)
-		for _, output := range modelOutputs {
-			details.SetServiceOutput(models.ServiceOutput{
-				ServiceName:  output.ServiceName,
-				Title:        output.Title,
-				CatchyPhrase: output.CatchyPhrase,
-			})
-
-			if output.ServiceName == "Claude 3" {
-				details.Title = output.Title
-				details.CatchyPhrase = output.CatchyPhrase
-			}
+		title, catchyPhrase, err := ic.OllamaClient.GenerateClusterTitle(ctx, representativeImagePaths, 3, 3)
+		if err != nil {
+			log.Printf("ImageCluster: title generation failed for %s: %v — using fallback", key, err)
+			title = fmt.Sprintf("Cluster %d", clusterID)
+			catchyPhrase = ""
 		}
 
-		clusterDetails[clusterKey] = details
+		// Store only the base filename for the API response.
+		imageFilenames := make([]string, len(imagePaths))
+		for i, p := range imagePaths {
+			imageFilenames[i] = filepath.Base(p)
+		}
+
+		clusterDetails[key] = models.ClusterDetails{
+			Title:        title,
+			CatchyPhrase: catchyPhrase,
+			Images:       imageFilenames,
+		}
 	}
 
-	return clusterDetails
+	return clusterDetails, nil
 }
 
-func makeItemMap(items []ItemDetails) map[string]ItemDetails {
-	itemMap := make(map[string]ItemDetails)
-	for _, item := range items {
-		itemMap[item.ID] = item
+// selectRepresentatives returns the paths of the k images whose embeddings are
+// closest to the cluster centroid (highest cosine similarity, i.e. highest dot
+// product since embeddings are already L2-normalized).
+func selectRepresentatives(paths []string, embs [][]float32, k int) []string {
+	if len(paths) == 0 {
+		return nil
 	}
-	return itemMap
-}
+	if len(paths) <= k {
+		return paths
+	}
+	if len(embs) == 0 || len(embs[0]) == 0 {
+		return paths[:k]
+	}
 
-func formatLabels(labelsSet map[string]struct{}) string {
-	labels := make([]string, 0, len(labelsSet))
-	for label := range labelsSet {
-		labels = append(labels, label)
+	dim := len(embs[0])
+	centroid := make([]float64, dim)
+	for _, emb := range embs {
+		for j, v := range emb {
+			centroid[j] += float64(v)
+		}
 	}
-	return strings.Join(labels, ", ")
-}
+	// L2-normalize the centroid.
+	var norm float64
+	for _, v := range centroid {
+		norm += v * v
+	}
+	norm = math.Sqrt(norm)
+	if norm > 0 {
+		for j := range centroid {
+			centroid[j] /= norm
+		}
+	}
 
-func getItemIDs(items []ItemDetails) []string {
-	ids := make([]string, len(items))
-	for i, item := range items {
-		ids[i] = item.ID
+	// Score each image by dot product with centroid.
+	type scored struct {
+		path  string
+		score float64
 	}
-	return ids
+	scores := make([]scored, len(paths))
+	for i, emb := range embs {
+		var dot float64
+		for j, v := range emb {
+			dot += float64(v) * centroid[j]
+		}
+		scores[i] = scored{path: paths[i], score: dot}
+	}
+
+	// Partial sort: find the k highest scores.
+	for i := 0; i < k && i < len(scores); i++ {
+		for j := i + 1; j < len(scores); j++ {
+			if scores[j].score > scores[i].score {
+				scores[i], scores[j] = scores[j], scores[i]
+			}
+		}
+	}
+
+	result := make([]string, k)
+	for i := 0; i < k; i++ {
+		result[i] = scores[i].path
+	}
+	return result
 }
