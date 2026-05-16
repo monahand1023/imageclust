@@ -10,9 +10,9 @@ RUN npm run build
 FROM golang:1.24-bookworm AS backend-builder
 WORKDIR /app
 
-# Download ONNX Runtime 1.20.1 (matches yalue/onnxruntime_go v1.30.1 requirement)
+# Download ONNX Runtime 1.26.0 (matches yalue/onnxruntime_go v1.30.1 requirement)
 # ORT release names differ from Docker's TARGETARCH: amd64→x64, arm64→aarch64
-ARG ONNXRUNTIME_VERSION=1.20.1
+ARG ONNXRUNTIME_VERSION=1.26.0
 ARG TARGETOS=linux
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/* && \
@@ -44,9 +44,12 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 
-# ONNX Runtime shared library
-COPY --from=backend-builder /usr/local/lib/libonnxruntime.so* /usr/local/lib/
-RUN ldconfig
+# ONNX Runtime shared library — Docker flattens symlinks on COPY, so
+# copy only the versioned file and recreate the unversioned symlink.
+ARG ONNXRUNTIME_VERSION=1.26.0
+COPY --from=backend-builder /usr/local/lib/libonnxruntime.so.${ONNXRUNTIME_VERSION} /usr/local/lib/
+RUN ln -sf /usr/local/lib/libonnxruntime.so.${ONNXRUNTIME_VERSION} /usr/local/lib/libonnxruntime.so && \
+    ldconfig
 
 # Application binary and frontend
 COPY --from=backend-builder /app/imageclust ./
