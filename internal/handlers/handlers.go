@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"imageclust/internal/clip"
 	"imageclust/internal/models"
@@ -11,6 +12,7 @@ import (
 	"imageclust/internal/utils"
 	"imageclust/internal/workflow"
 	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -168,7 +170,7 @@ func (h *Handlers) ClusterAndGenerate(w http.ResponseWriter, r *http.Request) {
 	minClusterSize, maxClusterSize := parseClusterSizes(r, 3, 6)
 
 	ic := workflow.NewImageCluster(minClusterSize, maxClusterSize, tempDir, h.clipModel, h.ollamaClient)
-	clusterDetails, err := ic.Run(uploadedImages)
+	clusterDetails, err := ic.Run(r.Context(), uploadedImages)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -245,8 +247,12 @@ func (h *Handlers) ServeImage(w http.ResponseWriter, r *http.Request) {
 
 	imageName := utils.SanitizeFilename(mux.Vars(r)["imageName"])
 	imagePath := filepath.Join(tempDir, "images", imageName)
-	if _, err := os.Stat(imagePath); os.IsNotExist(err) {
-		http.Error(w, "image not found", http.StatusNotFound)
+	if _, err := os.Stat(imagePath); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			http.Error(w, "image not found", http.StatusNotFound)
+		} else {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -274,7 +280,7 @@ type SpaHandler struct {
 
 func (h SpaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := filepath.Join(h.StaticPath, r.URL.Path)
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	if _, err := os.Stat(path); err != nil {
 		http.ServeFile(w, r, filepath.Join(h.StaticPath, h.IndexPath))
 		return
 	}

@@ -114,7 +114,7 @@ const ImageUploadForm = () => {
                 value={maxClusterSize}
                 onChange={(e) => setMaxClusterSize(parseInt(e.target.value))}
                 className="w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500"
-                min="3"
+                min={minClusterSize}
                 required
               />
             </div>

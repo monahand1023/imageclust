@@ -11,15 +11,20 @@ FROM golang:1.24-bookworm AS backend-builder
 WORKDIR /app
 
 # Download ONNX Runtime 1.20.1 (matches yalue/onnxruntime_go v1.30.1 requirement)
+# ORT release names differ from Docker's TARGETARCH: amd64→x64, arm64→aarch64
 ARG ONNXRUNTIME_VERSION=1.20.1
 ARG TARGETOS=linux
-ARG TARGETARCH=x64
+ARG TARGETARCH
 RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/* && \
+    case "${TARGETARCH}" in \
+      "arm64") ORT_ARCH=aarch64 ;; \
+      *)       ORT_ARCH=x64 ;; \
+    esac && \
     curl -fsSL \
-      "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-${TARGETOS}-${TARGETARCH}-${ONNXRUNTIME_VERSION}.tgz" \
+      "https://github.com/microsoft/onnxruntime/releases/download/v${ONNXRUNTIME_VERSION}/onnxruntime-${TARGETOS}-${ORT_ARCH}-${ONNXRUNTIME_VERSION}.tgz" \
       -o /tmp/ort.tgz && \
     tar -xzf /tmp/ort.tgz -C /tmp && \
-    cp /tmp/onnxruntime-${TARGETOS}-${TARGETARCH}-${ONNXRUNTIME_VERSION}/lib/libonnxruntime.so.${ONNXRUNTIME_VERSION} /usr/local/lib/ && \
+    cp /tmp/onnxruntime-${TARGETOS}-${ORT_ARCH}-${ONNXRUNTIME_VERSION}/lib/libonnxruntime.so.${ONNXRUNTIME_VERSION} /usr/local/lib/ && \
     ln -s /usr/local/lib/libonnxruntime.so.${ONNXRUNTIME_VERSION} /usr/local/lib/libonnxruntime.so && \
     ldconfig && \
     rm -rf /tmp/ort.tgz /tmp/onnxruntime-*

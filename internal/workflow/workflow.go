@@ -5,15 +5,14 @@ import (
 	"fmt"
 	"imageclust/internal/clip"
 	"imageclust/internal/clustering"
-	"imageclust/internal/embeddings"
 	"imageclust/internal/models"
 	"imageclust/internal/ollama"
-	"imageclust/internal/utils"
 	"log"
 	"math"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -48,7 +47,8 @@ type itemRecord struct {
 }
 
 // Run executes the full pipeline and returns a map of cluster key → ClusterDetails.
-func (ic *ImageCluster) Run(uploadedImages []models.UploadedImage) (map[string]models.ClusterDetails, error) {
+// ctx is propagated to Ollama calls so a cancelled request aborts in-flight LLM work.
+func (ic *ImageCluster) Run(ctx context.Context, uploadedImages []models.UploadedImage) (map[string]models.ClusterDetails, error) {
 	startTime := time.Now()
 	log.Println("ImageCluster: starting run")
 
@@ -74,7 +74,7 @@ func (ic *ImageCluster) Run(uploadedImages []models.UploadedImage) (map[string]m
 		return nil, fmt.Errorf("clustering failed: %w", err)
 	}
 
-	details, err := ic.buildClusterDetails(clusters, items, embeddingsList)
+	details, err := ic.buildClusterDetails(ctx, clusters, items, embeddingsList)
 	if err != nil {
 		return nil, err
 	}
@@ -84,10 +84,17 @@ func (ic *ImageCluster) Run(uploadedImages []models.UploadedImage) (map[string]m
 }
 
 // saveImages writes uploaded image bytes to disk and returns item records.
+// Files are named img_0.ext, img_1.ext, ... to avoid collisions between
+// uploads with identical or similarly-sanitized filenames.
 func (ic *ImageCluster) saveImages(uploadedImages []models.UploadedImage, imageDir string) ([]itemRecord, error) {
 	items := make([]itemRecord, 0, len(uploadedImages))
 	for i, img := range uploadedImages {
-		imagePath := filepath.Join(imageDir, utils.SanitizeFilename(img.Filename))
+		ext := strings.ToLower(filepath.Ext(img.Filename))
+		if ext == "" {
+			ext = ".jpg"
+		}
+		filename := fmt.Sprintf("img_%d%s", i, ext)
+		imagePath := filepath.Join(imageDir, filename)
 		if err := os.WriteFile(imagePath, img.Data, 0644); err != nil {
 			return nil, fmt.Errorf("failed to save image %s: %w", img.Filename, err)
 		}
@@ -128,7 +135,7 @@ func (ic *ImageCluster) generateEmbeddings(items []itemRecord) ([][]float32, []s
 		go func() {
 			defer wg.Done()
 			for job := range jobs {
-				emb, err := embeddings.GetEmbedding(ic.ClipModel, job.item.ImagePath)
+				emb, err := ic.ClipModel.Embed(job.item.ImagePath)
 				results <- embResult{
 					index:     job.index,
 					itemID:    job.item.ID,
@@ -170,6 +177,7 @@ func (ic *ImageCluster) generateEmbeddings(items []itemRecord) ([][]float32, []s
 // buildClusterDetails generates titles via Ollama for each cluster.
 // It picks up to 3 representative images (nearest to the cluster centroid).
 func (ic *ImageCluster) buildClusterDetails(
+	ctx context.Context,
 	clusters map[int][]string,
 	items []itemRecord,
 	embeddingsList [][]float32,
@@ -182,7 +190,6 @@ func (ic *ImageCluster) buildClusterDetails(
 	}
 
 	clusterDetails := make(map[string]models.ClusterDetails, len(clusters))
-	ctx := context.Background()
 
 	for clusterID, itemIDs := range clusters {
 		key := fmt.Sprintf("Cluster-%d", clusterID)
