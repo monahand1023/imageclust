@@ -7,7 +7,7 @@ COPY frontend/ ./
 RUN npm run build
 
 # ---- Stage 2: Build Go backend ----
-FROM golang:1.24-bookworm AS backend-builder
+FROM golang:1.25-bookworm AS backend-builder
 WORKDIR /app
 
 # Download ONNX Runtime 1.26.0 (matches yalue/onnxruntime_go v1.30.1 requirement)

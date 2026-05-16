@@ -246,7 +246,16 @@ func (h *Handlers) ServeImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	imageName := utils.SanitizeFilename(mux.Vars(r)["imageName"])
-	imagePath := filepath.Join(tempDir, "images", imageName)
+	imagesDir := filepath.Join(tempDir, "images")
+	imagePath := filepath.Join(imagesDir, imageName)
+
+	// Guard against path traversal: SanitizeFilename allows '.' so ".." survives.
+	// Confirm the resolved path stays inside the session's images directory.
+	if rel, err := filepath.Rel(imagesDir, imagePath); err != nil || strings.HasPrefix(rel, "..") {
+		http.Error(w, "invalid image path", http.StatusBadRequest)
+		return
+	}
+
 	if _, err := os.Stat(imagePath); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			http.Error(w, "image not found", http.StatusNotFound)
