@@ -15,14 +15,219 @@ CLIP ViT-L/14 ONNX  →  768-dim semantic embeddings per image
     ↓
 Ward hierarchical clustering  →  min/max size-constrained groups
     ↓
-Ollama vision LLM  →  title + catchy phrase per cluster (3 rep images sent)
+Centroid-based representative selection  →  3 images closest to cluster centroid
+    ↓
+Ollama vision LLM  →  title + catchy phrase per cluster
     ↓
 JSON API  →  React frontend renders inline
 ```
 
-**Why CLIP over ResNet/DINOv2:** CLIP's contrastive text-image training produces a semantically-organized embedding space — images of the same *concept* cluster together even if they look different visually. ResNet produces visual similarity; DINOv2 is good for re-identification. CLIP is the right choice for "what is this about" clustering.
+---
 
-**Why Ward over HDBSCAN:** Ward guarantees every image lands in a cluster and supports hard min/max size constraints. HDBSCAN produces noise points (unassigned images) and can't enforce a max cluster size.
+## Technical deep dive
+
+### CLIP embeddings
+
+[CLIP (Contrastive Language–Image Pre-training)](https://openai.com/research/clip) is an OpenAI model trained on 400 million (image, text) pairs using a contrastive objective: the image encoder and text encoder are trained jointly so that matching pairs have high cosine similarity in a shared embedding space.
+
+This project uses the vision-only half: **CLIP ViT-L/14** in ONNX format from [Xenova/clip-vit-large-patch14](https://huggingface.co/Xenova/clip-vit-large-patch14). The model takes a 224×224 image and produces a **768-dimensional vector**. Each dimension encodes abstract semantic content learned from the web-scale training data.
+
+**Why CLIP over alternatives:**
+
+| Model | Training objective | Best for | Weakness here |
+|-------|--------------------|----------|---------------|
+| CLIP ViT-L/14 | Contrastive (image + text) | Semantic concept clustering | Slightly slower than smaller models |
+| ResNet-50/101 | ImageNet classification | Visual feature extraction | Groups visually similar, not semantically similar images |
+| DINOv2 | Self-supervised distillation | Re-identification, fine-grained similarity | No semantic grounding from text |
+| CLIP ViT-B/32 | Contrastive (image + text) | Faster alternative | 512-dim, lower capacity than L/14 |
+
+CLIP's contrastive training means images of the same *concept* cluster together even when they look different visually — a photograph of a dog and a cartoon of a dog end up near each other; two photographs of different fields of grass do too.
+
+#### Image preprocessing
+
+Before inference, each image is put through the standard CLIP preprocessing pipeline:
+
+1. **Resize** to 224×224 using **CatmullRom interpolation** (Lanczos-quality bicubic, implemented via `golang.org/x/image/draw`) — better edge preservation than bilinear at a moderate cost.
+2. **Channel layout** — pixel values are rearranged from HWC (height × width × channels) to **NCHW** (batch × channels × height × width), which is what the ONNX model expects.
+3. **Normalization** — each channel is normalized with CLIP's specific mean and std:
+
+```
+R: (pixel/255 - 0.48145466) / 0.26862954
+G: (pixel/255 - 0.45782750) / 0.26130258
+B: (pixel/255 - 0.40821073) / 0.27577711
+```
+
+4. **L2 normalization** — the output 768-dim vector is L2-normalized so all embeddings lie on the unit hypersphere. This means **cosine similarity = dot product**, which simplifies downstream distance math.
+
+#### Inference implementation
+
+The ONNX session is wrapped in a `Model` struct with pre-allocated input/output tensors (`3×224×224` float32 in, `768` float32 out). Tensor memory is shared between Go and the C ONNX Runtime via a backing slice, avoiding allocations on the hot path. A `sync.Mutex` serializes all calls into the single ORT session — ONNX Runtime itself is thread-safe per-session, but the backing-slice reuse pattern requires exclusive access during inference.
+
+---
+
+### Ward hierarchical clustering
+
+Clustering is done via **agglomerative hierarchical clustering using Ward's linkage criterion**, implemented from scratch in Go. The algorithm runs on the L2-normalized CLIP embeddings.
+
+#### Why agglomerative / bottom-up
+
+The algorithm starts with each image as its own cluster and iteratively merges the two closest clusters until reaching the target number of clusters. This is the opposite of divisive approaches (start with one cluster, split down). Agglomerative methods produce a dendrogram — a tree of all possible merge decisions — and you cut it at any depth.
+
+#### Ward's linkage criterion
+
+Ward's method minimizes the **total within-cluster variance** at each merge step. The distance between two clusters A and B under Ward's criterion is:
+
+```
+d(A, B) = (|A| * |B|) / (|A| + |B|) * ||centroid(A) - centroid(B)||²
+```
+
+Where `|A|` and `|B|` are cluster sizes. The size-weighting term means Ward penalizes merges that would create large, spread-out clusters — it naturally produces compact, similarly-sized groups. This is better than single-linkage (which produces chains) or complete-linkage (which can break apart natural groups).
+
+Centroid updates are computed incrementally as a weighted average of the two merged centroids:
+
+```
+centroid(merged) = (|A|*centroid(A) + |B|*centroid(B)) / (|A| + |B|)
+```
+
+#### Size-constrained clustering
+
+Standard Ward clustering doesn't support min/max cluster size constraints. imageclust enforces them with a two-phase approach:
+
+**Phase 1 — target cluster count:**
+
+Given `totalImages`, `minSize`, and `maxSize`, the feasible range of cluster counts is:
+
+```
+nMin = ceil(totalImages / maxSize)   # fewest clusters that fit under maxSize
+nMax = floor(totalImages / minSize)  # most clusters that fit above minSize
+nTarget = (nMin + nMax) / 2          # midpoint heuristic
+```
+
+**Phase 2 — merge-time max enforcement:**
+
+During agglomeration, before each merge, the algorithm checks whether `|A| + |B| > maxSize`. If it would exceed the limit, that pair is marked as non-mergeable (distance set to `math.MaxFloat32`) and the next-closest pair is tried instead.
+
+**Phase 3 — post-hoc split:**
+
+If any cluster still exceeds `maxSize` after agglomeration completes (possible when most pairs are blocked), the cluster is recursively split using the same Ward algorithm on its sub-embeddings.
+
+**Phase 4 — min enforcement:**
+
+Clusters smaller than `minSize` after all merges are dropped from the final output.
+
+#### Complexity
+
+- Initial distance matrix: O(n²) pairwise Ward distances
+- Each merge iteration: O(n²) scan to find the minimum (naive; a priority queue would give O(n log n) but n is small here)
+- Overall: O(n³) in the worst case — negligible for the image counts this tool is designed for
+
+---
+
+### Representative image selection
+
+After clustering, the pipeline needs to pick 3 images per cluster to send to the vision LLM for labeling. It selects the images **closest to the cluster centroid** using cosine similarity.
+
+Since all embeddings are L2-normalized (unit vectors), cosine similarity equals the dot product:
+
+```
+cosine_sim(image, centroid) = image · centroid  (when both are unit vectors)
+```
+
+The centroid is computed as the mean of the cluster's embedding vectors, then L2-normalized. The top-k images by dot product score are selected via partial selection sort (O(n·k) — fine for small n).
+
+This ensures the most "representative" images go to the LLM — the ones that best capture the semantic center of the cluster — rather than random picks or outliers.
+
+---
+
+### Ollama vision LLM
+
+Each cluster is labeled by sending its representative images to a locally-running vision model via the **Ollama REST API** (`/api/generate`). Images are base64-encoded and embedded in the request body.
+
+The prompt asks the model to return strict JSON:
+
+```json
+{"title": "short title here", "catchy_phrase": "catchy phrase here"}
+```
+
+Title is capped at 25 characters; catchy phrase at 100.
+
+**Retry logic** uses exponential backoff with jitter:
+
+```
+backoff(attempt) = initialBackoff * 2^attempt * (1 + 0.3 * rand())
+```
+
+Starting at 2 seconds, capped at 30 seconds, with up to 3 attempts. Jitter prevents thundering-herd if multiple clusters retry simultaneously.
+
+**Supported vision models** (via Ollama):
+
+| Model | Size | Speed | Quality | Pull command |
+|-------|------|-------|---------|-------------|
+| `llava:7b` | 4.7 GB | Fast | Good | `ollama pull llava:7b` |
+| `llama3.2-vision:11b` | 8.0 GB | Medium | Better | `ollama pull llama3.2-vision:11b` |
+| `moondream` | 1.7 GB | Fastest | Lower | `ollama pull moondream` |
+
+Set `OLLAMA_MODEL` to switch. `llava:7b` is the best speed/quality tradeoff for most use cases.
+
+**Context propagation** — the request's `context.Context` is forwarded through to each Ollama HTTP call, so if the user cancels the browser request, in-flight LLM work is aborted cleanly.
+
+---
+
+### Concurrency model
+
+The pipeline has two parallel stages:
+
+**CLIP embedding (worker pool):**
+
+A bounded goroutine pool of `runtime.NumCPU()` workers fans out across all images. Each worker calls `Model.Embed()`, which preprocesses the image concurrently (decode, resize, normalize) and then acquires the mutex for the ORT session. The bottleneck is the single serialized inference session, so more workers than images-in-flight provides no benefit — but preprocessing overlap does help.
+
+```
+images → [job channel] → [worker 1] ─┐
+                        → [worker 2] ─┤ ORT mutex → [result channel] → ordered slice
+                        → [worker N] ─┘
+```
+
+**Cluster title generation (unbounded parallel):**
+
+All clusters are titled concurrently — one goroutine per cluster. Since Ollama queues requests it can't serve immediately, this is safe. Set `OLLAMA_NUM_PARALLEL` on the Ollama server side to control how many vision inference slots it allocates.
+
+---
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                     Go HTTP Server                        │
+│                    (gorilla/mux)                          │
+│                                                           │
+│  POST /api/cluster ──→ handlers.ClusterAndGenerate()     │
+│                              │                            │
+│                         session store                     │
+│                    (in-memory, 1h TTL)                    │
+│                              │                            │
+│                    workflow.ImageCluster.Run()            │
+│                    ┌─────────┴─────────┐                  │
+│              embed workers       cluster titles           │
+│           (NumCPU goroutines)  (1 goroutine/cluster)      │
+│                    │                   │                   │
+│           clip.Model.Embed()    ollama.Client             │
+│          (ONNX AdvancedSession)  (HTTP /api/generate)     │
+│           mutex-serialized      exponential backoff       │
+│                    │                   │                   │
+│          clustering.Perform...()       │                   │
+│          Ward + size constraints       │                   │
+│                    │                   │                   │
+│          selectRepresentatives()───────┘                   │
+│          (cosine similarity ranking)                       │
+│                                                           │
+│  GET /api/image/{name}?session=<id>                       │
+│  GET /  ──→ React SPA (frontend/dist)                     │
+└──────────────────────────────────────────────────────────┘
+
+External dependencies:
+  ONNX Runtime (libonnxruntime.dylib / .so)  — CPU inference
+  Ollama (localhost:11434)                   — Vision LLM
+```
 
 ---
 
@@ -108,7 +313,7 @@ O(n²) distance matrix. Negligible relative to CLIP and Ollama.
 | 10 | 2 | ~23 s | ~4 s | ~19 s |
 | 20 | 4 | ~51 s | ~9 s | ~42 s |
 
-**Bottleneck is Ollama** (~10 s/cluster, sequential). CLIP is ~17% of total time for 20 images. To speed things up: run a smaller vision model (`llava:7b` is already fast; `moondream` is faster but lower quality), or parallelize cluster title generation.
+**Bottleneck is Ollama** (~10 s/cluster, sequential per inference slot). CLIP is ~17% of total time for 20 images. To speed things up: run a smaller vision model (`llava:7b` is already fast; `moondream` is faster but lower quality), or set `OLLAMA_NUM_PARALLEL` on the server to allow concurrent cluster labeling.
 
 ---
 
@@ -160,7 +365,7 @@ Response:
 }
 ```
 
-**GET /api/image/{filename}?session=\<sessionId\>** — serves an uploaded image. Sessions expire after 1 hour.
+**GET /api/image/{filename}?session=\<sessionId\>** — serves an uploaded image. Sessions expire after 1 hour; the background cleanup goroutine removes temp directories every 10 minutes.
 
 ---
 
