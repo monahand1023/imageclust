@@ -33,6 +33,12 @@ const (
 	stdB  = float32(0.27577711)
 )
 
+// Embedder abstracts CLIP embedding to allow testing without ONNX Runtime.
+type Embedder interface {
+	Embed(imagePath string) ([]float32, error)
+	Close()
+}
+
 var initOnce sync.Once
 
 // InitONNXRuntime sets the shared library path and initializes the ONNX Runtime

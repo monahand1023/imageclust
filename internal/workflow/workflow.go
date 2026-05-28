@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -22,15 +23,16 @@ var maxWorkers = runtime.NumCPU()
 // ImageCluster orchestrates the end-to-end pipeline for a single request.
 type ImageCluster struct {
 	TempDir        string
-	ClipModel      *clip.Model
-	OllamaClient   *ollama.Client
+	ClipModel      clip.Embedder
+	OllamaClient   ollama.TitleGenerator
 	MinClusterSize int
 	MaxClusterSize int
 }
 
 // NewImageCluster creates an ImageCluster. clipModel and ollamaClient are
 // shared singletons loaded at startup — not created per request.
-func NewImageCluster(minClusterSize, maxClusterSize int, tempDir string, clipModel *clip.Model, ollamaClient *ollama.Client) *ImageCluster {
+// The concrete *clip.Model and *ollama.Client types both satisfy the respective interfaces.
+func NewImageCluster(minClusterSize, maxClusterSize int, tempDir string, clipModel clip.Embedder, ollamaClient ollama.TitleGenerator) *ImageCluster {
 	log.Printf("ImageCluster init: min=%d max=%d clusters, tempDir=%s", minClusterSize, maxClusterSize, tempDir)
 	return &ImageCluster{
 		TempDir:        tempDir,
@@ -170,6 +172,15 @@ func (ic *ImageCluster) generateEmbeddings(items []itemRecord) ([][]float32, []s
 		return nil, nil, firstErr
 	}
 
+	for i, emb := range embeddingsList {
+		if emb == nil {
+			if firstErr != nil {
+				return nil, nil, fmt.Errorf("failed to embed image at index %d: %w", i, firstErr)
+			}
+			return nil, nil, fmt.Errorf("failed to embed image at index %d: unknown error", i)
+		}
+	}
+
 	log.Printf("ImageCluster: embedded %d images with %d workers", n, numWorkers)
 	return embeddingsList, itemIDs, nil
 }
@@ -301,14 +312,10 @@ func selectRepresentatives(paths []string, embs [][]float32, k int) []string {
 		scores[i] = scored{path: paths[i], score: dot}
 	}
 
-	// Partial sort: find the k highest scores.
-	for i := 0; i < k && i < len(scores); i++ {
-		for j := i + 1; j < len(scores); j++ {
-			if scores[j].score > scores[i].score {
-				scores[i], scores[j] = scores[j], scores[i]
-			}
-		}
-	}
+	// Sort descending by score to find the k highest-scoring images.
+	sort.Slice(scores, func(i, j int) bool {
+		return scores[i].score > scores[j].score
+	})
 
 	result := make([]string, k)
 	for i := 0; i < k; i++ {

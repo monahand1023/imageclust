@@ -17,13 +17,19 @@ import (
 )
 
 const (
-	defaultModel   = "llama3.2-vision:11b"
-	defaultHost    = "http://localhost:11434"
-	initialBackoff = 2 * time.Second
-	maxBackoff     = 30 * time.Second
-	backoffFactor  = 2.0
-	jitterFactor   = 0.3
+	defaultModel     = "llama3.2-vision:11b"
+	defaultHost      = "http://localhost:11434"
+	initialBackoff   = 2 * time.Second
+	maxBackoff       = 30 * time.Second
+	backoffFactor    = 2.0
+	jitterFactor     = 0.3
+	maxOllamaRetries = 5
 )
+
+// TitleGenerator abstracts Ollama title generation to allow testing.
+type TitleGenerator interface {
+	GenerateClusterTitle(ctx context.Context, imagePaths []string, maxImages, retries int) (string, string, error)
+}
 
 // Client calls the Ollama HTTP API.
 type Client struct {

@@ -28,6 +28,7 @@ import (
 const (
 	sessionTTL      = 1 * time.Hour
 	cleanupInterval = 10 * time.Minute
+	maxUploadBytes  = 32 << 20 // 32 MB
 )
 
 // Handlers holds shared dependencies injected at startup.
@@ -65,12 +66,19 @@ func (s *sessionStore) cleanupExpiredSessions() {
 	defer ticker.Stop()
 	for range ticker.C {
 		s.mu.Lock()
+		var toDelete []string
 		for id, entry := range s.sessions {
 			if time.Since(entry.createdAt) > sessionTTL {
-				os.RemoveAll(entry.tempDir)
-				delete(s.sessions, id)
-				log.Printf("handlers: cleaned up expired session %s", id)
+				toDelete = append(toDelete, id)
 			}
+		}
+		for _, id := range toDelete {
+			entry := s.sessions[id]
+			if err := os.RemoveAll(entry.tempDir); err != nil {
+				log.Printf("handlers: failed to cleanup temp dir %s: %v", entry.tempDir, err)
+			}
+			delete(s.sessions, id)
+			log.Printf("handlers: cleaned up expired session %s", id)
 		}
 		s.mu.Unlock()
 	}
@@ -136,7 +144,7 @@ func (h *Handlers) ClusterAndGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := r.ParseMultipartForm(32 << 20); err != nil {
+	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
 		respondWithError(w, http.StatusBadRequest, "failed to parse form data")
 		return
 	}
@@ -250,8 +258,20 @@ func (h *Handlers) ServeImage(w http.ResponseWriter, r *http.Request) {
 	imagePath := filepath.Join(imagesDir, imageName)
 
 	// Guard against path traversal: SanitizeFilename allows '.' so ".." survives.
-	// Confirm the resolved path stays inside the session's images directory.
-	if rel, err := filepath.Rel(imagesDir, imagePath); err != nil || strings.HasPrefix(rel, "..") {
+	// Use absolute path prefix check to ensure the resolved path stays inside
+	// the session's images directory.
+	absImagePath, err := filepath.Abs(imagePath)
+	if err != nil {
+		http.Error(w, "invalid image path", http.StatusBadRequest)
+		return
+	}
+	absImagesDir, err := filepath.Abs(imagesDir)
+	if err != nil {
+		http.Error(w, "invalid image path", http.StatusBadRequest)
+		return
+	}
+	// Add separator to prevent /foo/bar matching /foo/barbaz
+	if !strings.HasPrefix(absImagePath+string(filepath.Separator), absImagesDir+string(filepath.Separator)) {
 		http.Error(w, "invalid image path", http.StatusBadRequest)
 		return
 	}
