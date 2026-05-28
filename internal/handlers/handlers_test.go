@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"encoding/json"
 	"imageclust/internal/models"
+	"imageclust/internal/ollama"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +14,97 @@ import (
 
 	"github.com/gorilla/mux"
 )
+
+// --- HealthHandler tests ------------------------------------------------
+
+func newHealthHandlers(t *testing.T, ollamaURL, modelPath string) *Handlers {
+	t.Helper()
+	client, err := ollama.NewClient(ollamaURL, "")
+	if err != nil {
+		t.Fatalf("ollama.NewClient: %v", err)
+	}
+	return &Handlers{
+		ollamaClient: client,
+		modelPath:    modelPath,
+		store:        newTestStore(),
+	}
+}
+
+func TestHealthHandler_ReturnsOK(t *testing.T) {
+	// Start a mock Ollama server that responds 200 to GET /api/tags.
+	mockOllama := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/tags" && r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer mockOllama.Close()
+
+	// Create a temporary model file so the path-exists check passes.
+	modelFile := filepath.Join(t.TempDir(), "vision_model.onnx")
+	if err := os.WriteFile(modelFile, []byte("dummy"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newHealthHandlers(t, mockOllama.URL, modelFile)
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	h.HealthHandler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("status code = %d, want 200", w.Code)
+	}
+
+	var resp healthResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Status != "ok" {
+		t.Errorf("status = %q, want ok", resp.Status)
+	}
+	if resp.Version != version {
+		t.Errorf("version = %q, want %q", resp.Version, version)
+	}
+	if resp.Checks.Ollama != "ok" {
+		t.Errorf("checks.ollama = %q, want ok", resp.Checks.Ollama)
+	}
+	if !resp.Checks.ModelLoaded {
+		t.Error("checks.model_loaded = false, want true")
+	}
+}
+
+func TestHealthHandler_DegradedWhenOllamaDown(t *testing.T) {
+	// Start a server and immediately close it so the port is unreachable.
+	deadServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	deadServer.Close()
+
+	// Model file exists so that check passes independently.
+	modelFile := filepath.Join(t.TempDir(), "vision_model.onnx")
+	if err := os.WriteFile(modelFile, []byte("dummy"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	h := newHealthHandlers(t, deadServer.URL, modelFile)
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	h.HealthHandler(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status code = %d, want 503", w.Code)
+	}
+
+	var resp healthResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Status != "degraded" {
+		t.Errorf("status = %q, want degraded", resp.Status)
+	}
+	if resp.Checks.Ollama != "unavailable" {
+		t.Errorf("checks.ollama = %q, want unavailable", resp.Checks.Ollama)
+	}
+}
 
 // --- sessionStore tests -------------------------------------------------
 

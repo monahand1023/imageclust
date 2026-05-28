@@ -80,6 +80,26 @@ type titleResponse struct {
 	CatchyPhrase string `json:"catchy_phrase"`
 }
 
+// Ping checks whether the Ollama server is reachable by calling /api/tags with
+// a short timeout. It returns nil if the server responds with HTTP 200.
+func (c *Client) Ping(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/tags", nil)
+	if err != nil {
+		return fmt.Errorf("ping: build request: %w", err)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("ping: %w", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("ping: unexpected status %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // GenerateClusterTitle sends up to maxImages representative images to the
 // vision model and returns a title (≤25 chars) and catchy phrase (≤100 chars).
 func (c *Client) GenerateClusterTitle(ctx context.Context, imagePaths []string, maxImages, retries int) (string, string, error) {

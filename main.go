@@ -48,10 +48,12 @@ func main() {
 	log.Printf("Ollama client ready")
 
 	// --- HTTP routing ---
-	h := handlers.New(clipModel, ollamaClient)
+	h := handlers.NewWithModelPath(clipModel, ollamaClient, modelPath)
 
 	router := mux.NewRouter()
 	router.Use(handlers.EnableCORS)
+
+	router.HandleFunc("/health", h.HealthHandler).Methods(http.MethodGet)
 
 	api := router.PathPrefix("/api").Subrouter()
 	api.HandleFunc("/cluster", h.ClusterAndGenerate).Methods(http.MethodPost, http.MethodOptions)

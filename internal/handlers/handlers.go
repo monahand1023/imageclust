@@ -35,6 +35,7 @@ const (
 type Handlers struct {
 	clipModel    *clip.Model
 	ollamaClient *ollama.Client
+	modelPath    string
 	store        *sessionStore
 }
 
@@ -47,6 +48,71 @@ func New(clipModel *clip.Model, ollamaClient *ollama.Client) *Handlers {
 		ollamaClient: ollamaClient,
 		store:        s,
 	}
+}
+
+// NewWithModelPath is like New but also stores the model path for health checks.
+func NewWithModelPath(clipModel *clip.Model, ollamaClient *ollama.Client, modelPath string) *Handlers {
+	h := New(clipModel, ollamaClient)
+	h.modelPath = modelPath
+	return h
+}
+
+// --- Health handler -------------------------------------------------------
+
+const version = "1.0.0"
+
+type healthResponse struct {
+	Status  string       `json:"status"`
+	Version string       `json:"version"`
+	Checks  healthChecks `json:"checks"`
+}
+
+type healthChecks struct {
+	Ollama      string `json:"ollama"`
+	ModelLoaded bool   `json:"model_loaded"`
+}
+
+// HealthHandler handles GET /health. It returns a JSON summary of service
+// readiness: whether Ollama is reachable and whether the CLIP model file exists.
+// Returns 200 when all checks pass, 503 when any check fails.
+func (h *Handlers) HealthHandler(w http.ResponseWriter, r *http.Request) {
+	checks := healthChecks{}
+	allOK := true
+
+	// Check Ollama reachability.
+	if err := h.ollamaClient.Ping(r.Context()); err != nil {
+		checks.Ollama = "unavailable"
+		allOK = false
+	} else {
+		checks.Ollama = "ok"
+	}
+
+	// Check CLIP model path exists (file or directory).
+	if h.modelPath != "" {
+		if _, err := os.Stat(h.modelPath); err == nil {
+			checks.ModelLoaded = true
+		} else {
+			checks.ModelLoaded = false
+			allOK = false
+		}
+	} else {
+		// No path configured — treat as unavailable.
+		checks.ModelLoaded = false
+		allOK = false
+	}
+
+	status := "ok"
+	httpCode := http.StatusOK
+	if !allOK {
+		status = "degraded"
+		httpCode = http.StatusServiceUnavailable
+	}
+
+	respondWithJSON(w, httpCode, healthResponse{
+		Status:  status,
+		Version: version,
+		Checks:  checks,
+	})
 }
 
 // --- Session store --------------------------------------------------------
