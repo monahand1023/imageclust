@@ -1,5 +1,7 @@
 # imageclust
 
+[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/) [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white)](https://react.dev/) [![CLIP](https://img.shields.io/badge/model-CLIP%20ViT--L%2F14-purple)](.) [![License: MIT](https://img.shields.io/github/license/monahand1023/imageclust)](LICENSE)
+
 Semantic image clustering that runs entirely on your local machine. Upload a collection of photos, get back labeled groups organized by what they're *about* — not just visual similarity.
 
 Clusters 20 images in ~50 seconds on an M4 Mac Mini (no GPU, no cloud).
