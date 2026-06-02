@@ -10,18 +10,14 @@ Clusters 20 images in ~50 seconds on an M4 Mac Mini (no GPU, no cloud).
 
 ## How it works
 
-```
-Upload images
-    ↓
-CLIP ViT-L/14 ONNX  →  768-dim semantic embeddings per image
-    ↓
-Ward hierarchical clustering  →  min/max size-constrained groups
-    ↓
-Centroid-based representative selection  →  3 images closest to cluster centroid
-    ↓
-Ollama vision LLM  →  title + catchy phrase per cluster
-    ↓
-JSON API  →  React frontend renders inline
+```mermaid
+flowchart TB
+    Up["Upload images"] --> CLIP["CLIP ViT-L/14 (ONNX)<br/>768-dim semantic embeddings per image"]
+    CLIP --> Ward["Ward hierarchical clustering<br/>min/max size-constrained groups"]
+    Ward --> Rep["Centroid-based selection<br/>3 images closest to each cluster centroid"]
+    Rep --> VLM["Ollama vision LLM<br/>title + catchy phrase per cluster"]
+    VLM --> API["JSON API"]
+    API --> UI["React frontend renders inline"]
 ```
 
 ---
