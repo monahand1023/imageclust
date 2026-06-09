@@ -179,10 +179,17 @@ The pipeline has two parallel stages:
 
 A bounded goroutine pool of `runtime.NumCPU()` workers fans out across all images. Each worker calls `Model.Embed()`, which preprocesses the image concurrently (decode, resize, normalize) and then acquires the mutex for the ORT session. The bottleneck is the single serialized inference session, so more workers than images-in-flight provides no benefit — but preprocessing overlap does help.
 
-```
-images → [job channel] → [worker 1] ─┐
-                        → [worker 2] ─┤ ORT mutex → [result channel] → ordered slice
-                        → [worker N] ─┘
+```mermaid
+flowchart LR
+    images(["images"]) --> jobs["job channel"]
+    jobs --> w1["worker 1"]
+    jobs --> w2["worker 2"]
+    jobs --> wN["worker N"]
+    w1 --> mutex["ORT mutex"]
+    w2 --> mutex
+    wN --> mutex
+    mutex --> results["result channel"]
+    results --> slice(["ordered slice"])
 ```
 
 **Cluster title generation (unbounded parallel):**
@@ -193,38 +200,24 @@ All clusters are titled concurrently — one goroutine per cluster. Since Ollama
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────────────────┐
-│                     Go HTTP Server                        │
-│                    (gorilla/mux)                          │
-│                                                           │
-│  POST /api/cluster ──→ handlers.ClusterAndGenerate()     │
-│                              │                            │
-│                         session store                     │
-│                    (in-memory, 1h TTL)                    │
-│                              │                            │
-│                    workflow.ImageCluster.Run()            │
-│                    ┌─────────┴─────────┐                  │
-│              embed workers       cluster titles           │
-│           (NumCPU goroutines)  (1 goroutine/cluster)      │
-│                    │                   │                   │
-│           clip.Model.Embed()    ollama.Client             │
-│          (ONNX AdvancedSession)  (HTTP /api/generate)     │
-│           mutex-serialized      exponential backoff       │
-│                    │                   │                   │
-│          clustering.Perform...()       │                   │
-│          Ward + size constraints       │                   │
-│                    │                   │                   │
-│          selectRepresentatives()───────┘                   │
-│          (cosine similarity ranking)                       │
-│                                                           │
-│  GET /api/image/{name}?session=<id>                       │
-│  GET /  ──→ React SPA (frontend/dist)                     │
-└──────────────────────────────────────────────────────────┘
-
-External dependencies:
-  ONNX Runtime (libonnxruntime.dylib / .so)  — CPU inference
-  Ollama (localhost:11434)                   — Vision LLM
+```mermaid
+flowchart TD
+    subgraph server ["Go HTTP Server — gorilla/mux"]
+        post["POST /api/cluster"] --> handler["handlers.ClusterAndGenerate()"]
+        handler --> store["session store<br/>in-memory, 1h TTL"]
+        store --> run["workflow.ImageCluster.Run()"]
+        run --> embed["embed workers<br/>NumCPU goroutines"]
+        run --> titles["cluster titles<br/>1 goroutine per cluster"]
+        embed --> clip["clip.Model.Embed()<br/>ONNX AdvancedSession, mutex-serialized"]
+        titles --> oc["ollama.Client<br/>HTTP /api/generate, backoff"]
+        clip --> cluster["clustering.Perform()<br/>Ward + size constraints"]
+        cluster --> rep["selectRepresentatives()<br/>cosine similarity ranking"]
+        titles --> rep
+        spa["GET / serves React SPA"]
+        imgreq["GET /api/image/{name}?session=id"]
+    end
+    clip -. inference .-> onnx[("ONNX Runtime")]
+    oc -. vision LLM .-> ollamasrv[("Ollama :11434")]
 ```
 
 ---
