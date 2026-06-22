@@ -7,4 +7,4 @@ require (
 	github.com/yalue/onnxruntime_go v1.30.1
 )
 
-require golang.org/x/image v0.41.0
+require golang.org/x/image v0.43.0
