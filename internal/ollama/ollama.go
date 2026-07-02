@@ -19,16 +19,17 @@ import (
 const (
 	defaultModel     = "llama3.2-vision:11b"
 	defaultHost      = "http://localhost:11434"
+	defaultMaxImages = 3
+	defaultRetries   = 3
 	initialBackoff   = 2 * time.Second
 	maxBackoff       = 30 * time.Second
 	backoffFactor    = 2.0
 	jitterFactor     = 0.3
-	maxOllamaRetries = 5
 )
 
 // TitleGenerator abstracts Ollama title generation to allow testing.
 type TitleGenerator interface {
-	GenerateClusterTitle(ctx context.Context, imagePaths []string, maxImages, retries int) (string, string, error)
+	GenerateClusterTitle(ctx context.Context, imagePaths []string) (string, string, error)
 }
 
 // Client calls the Ollama HTTP API.
@@ -36,11 +37,13 @@ type Client struct {
 	baseURL    string
 	model      string
 	httpClient *http.Client
+	maxImages  int // images sent per title request
+	retries    int // attempts before giving up
 }
 
 // NewClient creates a Client. host defaults to OLLAMA_HOST env or http://localhost:11434.
 // model defaults to OLLAMA_MODEL env or llama3.2-vision:11b.
-func NewClient(host, model string) (*Client, error) {
+func NewClient(host, model string) *Client {
 	if host == "" {
 		host = os.Getenv("OLLAMA_HOST")
 		if host == "" {
@@ -57,7 +60,9 @@ func NewClient(host, model string) (*Client, error) {
 		baseURL:    strings.TrimRight(host, "/"),
 		model:      model,
 		httpClient: &http.Client{Timeout: 5 * time.Minute},
-	}, nil
+		maxImages:  defaultMaxImages,
+		retries:    defaultRetries,
+	}
 }
 
 // generateRequest mirrors the Ollama REST API generate body.
@@ -100,14 +105,13 @@ func (c *Client) Ping(ctx context.Context) error {
 	return nil
 }
 
-// GenerateClusterTitle sends up to maxImages representative images to the
-// vision model and returns a title (≤25 chars) and catchy phrase (≤100 chars).
-func (c *Client) GenerateClusterTitle(ctx context.Context, imagePaths []string, maxImages, retries int) (string, string, error) {
-	if maxImages < 1 {
-		maxImages = 1
-	}
-	if len(imagePaths) > maxImages {
-		imagePaths = imagePaths[:maxImages]
+// GenerateClusterTitle sends up to Client.maxImages representative images to
+// the vision model and returns a title (≤25 chars) and catchy phrase (≤100
+// chars). On failure it returns zero values and an error — the caller owns
+// any fallback naming.
+func (c *Client) GenerateClusterTitle(ctx context.Context, imagePaths []string) (string, string, error) {
+	if len(imagePaths) > c.maxImages {
+		imagePaths = imagePaths[:c.maxImages]
 	}
 
 	images := make([]string, 0, len(imagePaths))
@@ -121,20 +125,20 @@ func (c *Client) GenerateClusterTitle(ctx context.Context, imagePaths []string, 
 	}
 
 	if len(images) == 0 {
-		return "Untitled", "No phrase available", nil
+		return "", "", fmt.Errorf("no readable images among %d paths", len(imagePaths))
 	}
 
 	prompt := `Analyze this cluster of related images. Return ONLY a JSON object — no markdown, no explanation:
 {"title": "short title here", "catchy_phrase": "catchy phrase here"}
 Rules: title max 25 characters, catchy_phrase max 100 characters.`
 
-	for attempt := 0; attempt < retries; attempt++ {
+	for attempt := 0; attempt < c.retries; attempt++ {
 		if attempt > 0 {
 			backoff := calculateBackoff(attempt - 1)
-			log.Printf("ollama: attempt %d/%d, waiting %v", attempt+1, retries, backoff)
+			log.Printf("ollama: attempt %d/%d, waiting %v", attempt+1, c.retries, backoff)
 			select {
 			case <-ctx.Done():
-				return "Untitled", "No phrase available", ctx.Err()
+				return "", "", ctx.Err()
 			case <-time.After(backoff):
 			}
 		}
@@ -145,12 +149,10 @@ Rules: title max 25 characters, catchy_phrase max 100 characters.`
 			continue
 		}
 
-		log.Printf("ollama: raw response: %s", responseText)
-
 		jsonStr := extractJSON(responseText)
 		var result titleResponse
 		if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-			log.Printf("ollama: JSON parse error (attempt %d): %v — raw: %s", attempt+1, err, responseText)
+			log.Printf("ollama: JSON parse error (attempt %d): %v — raw: %.200s", attempt+1, err, responseText)
 			continue
 		}
 
@@ -165,7 +167,7 @@ Rules: title max 25 characters, catchy_phrase max 100 characters.`
 		return result.Title, result.CatchyPhrase, nil
 	}
 
-	return "Untitled", "No phrase available", fmt.Errorf("exhausted %d retries", retries)
+	return "", "", fmt.Errorf("exhausted %d retries", c.retries)
 }
 
 func (c *Client) generate(ctx context.Context, prompt string, images []string) (string, error) {

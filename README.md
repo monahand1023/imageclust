@@ -105,13 +105,11 @@ nTarget = (nMin + nMax) / 2          # midpoint heuristic
 
 During agglomeration, before each merge, the algorithm checks whether `|A| + |B| > maxSize`. If it would exceed the limit, that pair is marked as non-mergeable (distance set to `math.MaxFloat32`) and the next-closest pair is tried instead.
 
-**Phase 3 — post-hoc split:**
+Because every merge is guarded this way, no cluster can ever exceed `maxSize` — no post-hoc splitting is needed.
 
-If any cluster still exceeds `maxSize` after agglomeration completes (possible when most pairs are blocked), the cluster is recursively split using the same Ward algorithm on its sub-embeddings.
+**Phase 3 — min enforcement:**
 
-**Phase 4 — min enforcement:**
-
-Clusters smaller than `minSize` after all merges are dropped from the final output.
+Clusters smaller than `minSize` after all merges are reported as `unclustered` in the API response rather than silently dropped — every uploaded image is accounted for.
 
 #### Complexity
 
@@ -340,6 +338,8 @@ scripts/
 | `minClusterSize` | int | Minimum images per cluster (default 3) |
 | `maxClusterSize` | int | Maximum images per cluster (default 6) |
 
+Uploads are capped at 32 MB and 200 images per request. Every uploaded image is accounted for in the response: clustered, `unclustered` (didn't fit any cluster under the size constraints), or `skipped` (couldn't be processed, e.g. an unsupported format like HEIC).
+
 Response:
 ```json
 {
@@ -352,11 +352,19 @@ Response:
       "catchy_phrase": "Nature's canvas of tranquility",
       "images": ["img_0.jpg", "img_3.jpg", "img_7.jpg"]
     }
-  ]
+  ],
+  "unclustered": ["img_9.jpg"],
+  "skipped": [{ "filename": "IMG_1024.heic", "error": "image: unknown format" }]
 }
 ```
 
+Errors use the same envelope: `{"status": "error", "error": "<message>"}`.
+
 **GET /api/image/{filename}?session=\<sessionId\>** — serves an uploaded image. Sessions expire after 1 hour; the background cleanup goroutine removes temp directories every 10 minutes.
+
+**GET /api/export?session=\<sessionId\>** — streams a ZIP of the session's results with one folder per cluster (`01 <Title>/…`) plus an `unclustered/` folder.
+
+Repeat runs with the same images are fast: embeddings are cached in-process by content hash, so re-clustering with different size constraints skips CLIP inference entirely.
 
 ---
 

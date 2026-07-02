@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"image/color"
 	"image/png"
 	"imageclust/internal/models"
 	"os"
@@ -18,11 +19,16 @@ type stubEmbedder struct {
 	// If the path doesn't match, returns a default unit vector.
 	embeddings map[string][]float32
 	err        error
+	// errSuffix makes Embed fail only for paths ending in this suffix.
+	errSuffix string
 }
 
 func (s *stubEmbedder) Embed(imagePath string) ([]float32, error) {
 	if s.err != nil {
 		return nil, s.err
+	}
+	if s.errSuffix != "" && strings.HasSuffix(imagePath, s.errSuffix) {
+		return nil, fmt.Errorf("stub: cannot decode %s", imagePath)
 	}
 	for suffix, emb := range s.embeddings {
 		if strings.HasSuffix(imagePath, suffix) {
@@ -42,7 +48,7 @@ type stubTitleGenerator struct {
 	calls        int
 }
 
-func (s *stubTitleGenerator) GenerateClusterTitle(_ context.Context, _ []string, _, _ int) (string, string, error) {
+func (s *stubTitleGenerator) GenerateClusterTitle(_ context.Context, _ []string) (string, string, error) {
 	s.calls++
 	if s.err != nil {
 		return "", "", s.err
@@ -65,11 +71,19 @@ func writePNG(path string) error {
 
 // makeUploadedImages returns a slice of models.UploadedImage built from real
 // 1×1 PNG bytes (so CLIP preprocessing won't fail if a real Embedder were used).
+// Pixel values are derived from the test name and index so every image has
+// unique content — the process-wide embedding cache must not leak hits
+// between tests or between images.
 func makeUploadedImages(t *testing.T, n int) []models.UploadedImage {
 	t.Helper()
+	var seed uint8
+	for _, c := range t.Name() {
+		seed += uint8(c)
+	}
 	images := make([]models.UploadedImage, n)
 	for i := 0; i < n; i++ {
 		img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+		img.SetRGBA(0, 0, color.RGBA{R: seed, G: uint8(i), B: seed + uint8(i), A: 255})
 		tmp, err := os.CreateTemp(t.TempDir(), "img*.png")
 		if err != nil {
 			t.Fatalf("CreateTemp: %v", err)
@@ -105,15 +119,15 @@ func TestRun_FullPipeline(t *testing.T) {
 	ic := NewImageCluster(2, 6, t.TempDir(), embedder, titler)
 	images := makeUploadedImages(t, n)
 
-	details, err := ic.Run(context.Background(), images)
+	result, err := ic.Run(context.Background(), images)
 	if err != nil {
 		t.Fatalf("Run returned error: %v", err)
 	}
-	if len(details) == 0 {
+	if len(result.Clusters) == 0 {
 		t.Fatal("Run returned 0 clusters; expected at least 1")
 	}
 
-	for key, cd := range details {
+	for key, cd := range result.Clusters {
 		if cd.Title == "" {
 			t.Errorf("cluster %s: empty title", key)
 		}
@@ -132,15 +146,15 @@ func TestRun_TitleAndPhrasePopulated(t *testing.T) {
 	ic := NewImageCluster(2, 6, t.TempDir(), embedder, titler)
 	images := makeUploadedImages(t, 4)
 
-	details, err := ic.Run(context.Background(), images)
+	result, err := ic.Run(context.Background(), images)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(details) == 0 {
+	if len(result.Clusters) == 0 {
 		t.Skip("no clusters produced; skip title check")
 	}
 
-	for key, cd := range details {
+	for key, cd := range result.Clusters {
 		if cd.Title != "Sunset Photos" {
 			t.Errorf("cluster %s: title = %q, want %q", key, cd.Title, "Sunset Photos")
 		}
@@ -247,6 +261,87 @@ func TestBuildClusterDetails_MultiCluster(t *testing.T) {
 	}
 }
 
+// TestRun_SkipsFailedImageAndReportsIt verifies that one undecodable image
+// doesn't fail the whole batch: it's reported in Skipped (by original
+// filename) while the remaining images cluster normally.
+func TestRun_SkipsFailedImageAndReportsIt(t *testing.T) {
+	embedder := &stubEmbedder{errSuffix: "img_3.png"}
+	titler := &stubTitleGenerator{title: "T", catchyPhrase: "P"}
+
+	ic := NewImageCluster(2, 6, t.TempDir(), embedder, titler)
+	images := makeUploadedImages(t, 4) // saved as img_0.png … img_3.png
+
+	result, err := ic.Run(context.Background(), images)
+	if err != nil {
+		t.Fatalf("Run should tolerate a single failed image: %v", err)
+	}
+
+	if len(result.Skipped) != 1 {
+		t.Fatalf("len(Skipped) = %d, want 1: %+v", len(result.Skipped), result.Skipped)
+	}
+	if result.Skipped[0].Filename != "test_3.png" {
+		t.Errorf("Skipped[0].Filename = %q, want original filename test_3.png", result.Skipped[0].Filename)
+	}
+	if result.Skipped[0].Error == "" {
+		t.Error("Skipped[0].Error is empty, want the embed error message")
+	}
+
+	// The remaining 3 images must all appear somewhere (clusters or unclustered).
+	total := len(result.Unclustered)
+	for _, cd := range result.Clusters {
+		total += len(cd.Images)
+	}
+	if total != 3 {
+		t.Errorf("clusters+unclustered account for %d images, want 3", total)
+	}
+}
+
+// TestRun_OutlierReportedAsUnclustered verifies that an image too dissimilar
+// to join any cluster is returned in Unclustered rather than dropped.
+func TestRun_OutlierReportedAsUnclustered(t *testing.T) {
+	embedder := &stubEmbedder{embeddings: map[string][]float32{
+		"img_0.png": {1, 0, 0, 0},
+		"img_1.png": {0.99, 0.01, 0, 0},
+		"img_2.png": {0.98, 0.02, 0, 0},
+		"img_3.png": {0, 0, 0, 1}, // orthogonal outlier
+	}}
+	titler := &stubTitleGenerator{title: "T", catchyPhrase: "P"}
+
+	ic := NewImageCluster(2, 3, t.TempDir(), embedder, titler)
+	images := makeUploadedImages(t, 4)
+
+	result, err := ic.Run(context.Background(), images)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(result.Unclustered) != 1 || result.Unclustered[0] != "img_3.png" {
+		t.Errorf("Unclustered = %v, want [img_3.png]", result.Unclustered)
+	}
+}
+
+// TestRun_TooFewImagesReturnsAllUnclustered verifies that fewer images than
+// minClusterSize yields an empty cluster set with everything unclustered,
+// instead of a hard error.
+func TestRun_TooFewImagesReturnsAllUnclustered(t *testing.T) {
+	embedder := &stubEmbedder{}
+	titler := &stubTitleGenerator{title: "T", catchyPhrase: "P"}
+
+	ic := NewImageCluster(3, 6, t.TempDir(), embedder, titler)
+	images := makeUploadedImages(t, 2)
+
+	result, err := ic.Run(context.Background(), images)
+	if err != nil {
+		t.Fatalf("Run with too few images should not error: %v", err)
+	}
+	if len(result.Clusters) != 0 {
+		t.Errorf("len(Clusters) = %d, want 0", len(result.Clusters))
+	}
+	if len(result.Unclustered) != 2 {
+		t.Errorf("len(Unclustered) = %d, want 2: %v", len(result.Unclustered), result.Unclustered)
+	}
+}
+
 // TestRun_EmbedError verifies that an Embedder error surfaces from Run.
 func TestRun_EmbedError(t *testing.T) {
 	embedder := &stubEmbedder{err: fmt.Errorf("GPU out of memory")}
@@ -270,11 +365,11 @@ func TestRun_ImageFilenamesAreBasenames(t *testing.T) {
 	ic := NewImageCluster(2, 6, t.TempDir(), embedder, titler)
 	images := makeUploadedImages(t, 4)
 
-	details, err := ic.Run(context.Background(), images)
+	result, err := ic.Run(context.Background(), images)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	for key, cd := range details {
+	for key, cd := range result.Clusters {
 		for _, filename := range cd.Images {
 			if strings.ContainsAny(filename, "/\\") {
 				t.Errorf("cluster %s: image filename %q contains path separator", key, filename)

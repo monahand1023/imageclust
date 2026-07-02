@@ -152,9 +152,24 @@ func preprocessImage(imagePath string) ([]float32, error) {
 		return nil, fmt.Errorf("clip: decode %s: %w", imagePath, err)
 	}
 
-	// Scale to 224×224 using CatmullRom (Lanczos-quality bicubic); result is NRGBA.
+	// Standard CLIP preprocessing resizes the shortest side to 224 and
+	// center-crops. Cropping the central square first and scaling it to
+	// 224×224 is equivalent (up to resampling) and avoids aspect distortion.
+	b := img.Bounds()
+	side := b.Dx()
+	if b.Dy() < side {
+		side = b.Dy()
+	}
+	srcRect := image.Rect(
+		b.Min.X+(b.Dx()-side)/2,
+		b.Min.Y+(b.Dy()-side)/2,
+		b.Min.X+(b.Dx()-side)/2+side,
+		b.Min.Y+(b.Dy()-side)/2+side,
+	)
+
+	// Scale using CatmullRom (Lanczos-quality bicubic); result is NRGBA.
 	resized := image.NewNRGBA(image.Rect(0, 0, inputSize, inputSize))
-	xdraw.CatmullRom.Scale(resized, resized.Bounds(), img, img.Bounds(), draw.Over, nil)
+	xdraw.CatmullRom.Scale(resized, resized.Bounds(), img, srcRect, draw.Src, nil)
 
 	stride := inputSize * inputSize
 	data := make([]float32, 3*stride)

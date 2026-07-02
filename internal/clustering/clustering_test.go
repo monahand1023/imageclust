@@ -179,6 +179,26 @@ func TestMergeClusters(t *testing.T) {
 	}
 }
 
+func TestMergeClusters_DoesNotAliasInputIndices(t *testing.T) {
+	// a.Indices has spare capacity; a naive append(a.Indices, b.Indices...)
+	// would write into that backing array, corrupting earlier merge results.
+	shared := make([]int, 2, 4)
+	shared[0], shared[1] = 0, 1
+	a := Cluster{Indices: shared, Size: 2, Centroid: []float32{0, 0}}
+	b := Cluster{Indices: []int{2}, Size: 1, Centroid: []float32{1, 1}}
+	c := Cluster{Indices: []int{3}, Size: 1, Centroid: []float32{2, 2}}
+
+	ab := MergeClusters(a, b)
+	_ = MergeClusters(a, c)
+
+	want := []int{0, 1, 2}
+	for i, v := range want {
+		if ab.Indices[i] != v {
+			t.Fatalf("ab.Indices = %v, want %v — merge aliased the input's backing array", ab.Indices, want)
+		}
+	}
+}
+
 func TestCalculateOptimalClusters(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -218,7 +238,7 @@ func TestPerformClusteringWithConstraints(t *testing.T) {
 	}
 	ids := []string{"a", "b", "c", "d", "e", "f"}
 
-	result, err := PerformClusteringWithConstraints(embeddings, ids, 2, 4)
+	result, unclustered, err := PerformClusteringWithConstraints(embeddings, ids, 2, 4)
 
 	if err != nil {
 		t.Fatalf("clustering should have succeeded: %v", err)
@@ -228,12 +248,50 @@ func TestPerformClusteringWithConstraints(t *testing.T) {
 		t.Error("expected at least one cluster")
 	}
 
-	// Verify all items are accounted for
-	totalItems := 0
+	// Every input ID must appear exactly once, either clustered or unclustered.
+	seen := make(map[string]int)
 	for _, items := range result {
-		totalItems += len(items)
 		if len(items) < 2 || len(items) > 4 {
 			t.Errorf("cluster size %d outside constraints [2, 4]", len(items))
 		}
+		for _, id := range items {
+			seen[id]++
+		}
+	}
+	for _, id := range unclustered {
+		seen[id]++
+	}
+	for _, id := range ids {
+		if seen[id] != 1 {
+			t.Errorf("id %q appeared %d times across clusters+unclustered, want exactly 1", id, seen[id])
+		}
+	}
+}
+
+func TestPerformClusteringWithConstraints_OutlierReturnedAsUnclustered(t *testing.T) {
+	// Three tight points plus one distant outlier. With minSize=2 the outlier
+	// can't form a valid cluster — it must be reported, not silently dropped.
+	embeddings := [][]float32{
+		{0.0, 0.0},
+		{0.1, 0.1},
+		{0.2, 0.2},
+		{50.0, 50.0},
+	}
+	ids := []string{"a", "b", "c", "outlier"}
+
+	result, unclustered, err := PerformClusteringWithConstraints(embeddings, ids, 2, 3)
+	if err != nil {
+		t.Fatalf("clustering should have succeeded: %v", err)
+	}
+
+	if len(unclustered) != 1 || unclustered[0] != "outlier" {
+		t.Errorf("unclustered = %v, want [outlier]", unclustered)
+	}
+	total := 0
+	for _, items := range result {
+		total += len(items)
+	}
+	if total != 3 {
+		t.Errorf("clustered items = %d, want 3", total)
 	}
 }

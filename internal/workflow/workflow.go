@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"imageclust/internal/clip"
 	"imageclust/internal/clustering"
@@ -45,12 +46,22 @@ func NewImageCluster(minClusterSize, maxClusterSize int, tempDir string, clipMod
 
 type itemRecord struct {
 	ID        string
+	Name      string // sanitized original filename, for user-facing messages
 	ImagePath string
+	Hash      string // SHA-256 of the image bytes; empty disables caching
 }
 
-// Run executes the full pipeline and returns a map of cluster key → ClusterDetails.
-// ctx is propagated to Ollama calls so a cancelled request aborts in-flight LLM work.
-func (ic *ImageCluster) Run(ctx context.Context, uploadedImages []models.UploadedImage) (map[string]models.ClusterDetails, error) {
+// Result is the outcome of a pipeline run. Every uploaded image is accounted
+// for exactly once: in a cluster, in Unclustered, or in Skipped.
+type Result struct {
+	Clusters    map[string]models.ClusterDetails
+	Unclustered []string              // base filenames that didn't fit any cluster
+	Skipped     []models.SkippedImage // images that failed embedding, with reasons
+}
+
+// Run executes the full pipeline. ctx is propagated to Ollama calls so a
+// cancelled request aborts in-flight LLM work.
+func (ic *ImageCluster) Run(ctx context.Context, uploadedImages []models.UploadedImage) (*Result, error) {
 	startTime := time.Now()
 	log.Println("ImageCluster: starting run")
 
@@ -64,25 +75,52 @@ func (ic *ImageCluster) Run(ctx context.Context, uploadedImages []models.Uploade
 		return nil, err
 	}
 
-	embeddingsList, itemIDs, err := ic.generateEmbeddings(items)
+	embedded, err := ic.generateEmbeddings(items)
 	if err != nil {
 		return nil, err
 	}
 
-	clusters, err := clustering.PerformClusteringWithConstraints(
-		embeddingsList, itemIDs, ic.MinClusterSize, ic.MaxClusterSize,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("clustering failed: %w", err)
+	itemIDs := make([]string, len(embedded.items))
+	for i, item := range embedded.items {
+		itemIDs[i] = item.ID
 	}
 
-	details, err := ic.buildClusterDetails(ctx, clusters, items, embeddingsList)
+	// With fewer valid images than a single cluster's minimum, skip clustering
+	// and report everything as unclustered instead of failing the request.
+	var clusters map[int][]string
+	var unclusteredIDs []string
+	if len(embedded.items) < ic.MinClusterSize {
+		clusters = map[int][]string{}
+		unclusteredIDs = itemIDs
+	} else {
+		clusters, unclusteredIDs, err = clustering.PerformClusteringWithConstraints(
+			embedded.embs, itemIDs, ic.MinClusterSize, ic.MaxClusterSize,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("clustering failed: %w", err)
+		}
+	}
+
+	details, err := ic.buildClusterDetails(ctx, clusters, embedded.items, embedded.embs)
 	if err != nil {
 		return nil, err
 	}
 
-	log.Printf("ImageCluster: completed in %v", time.Since(startTime))
-	return details, nil
+	// Map unclustered item IDs back to servable base filenames.
+	pathByID := make(map[string]string, len(embedded.items))
+	for _, item := range embedded.items {
+		pathByID[item.ID] = item.ImagePath
+	}
+	unclustered := make([]string, 0, len(unclusteredIDs))
+	for _, id := range unclusteredIDs {
+		if p, ok := pathByID[id]; ok {
+			unclustered = append(unclustered, filepath.Base(p))
+		}
+	}
+
+	log.Printf("ImageCluster: completed in %v (%d clusters, %d unclustered, %d skipped)",
+		time.Since(startTime), len(details), len(unclustered), len(embedded.skipped))
+	return &Result{Clusters: details, Unclustered: unclustered, Skipped: embedded.skipped}, nil
 }
 
 // saveImages writes uploaded image bytes to disk and returns item records.
@@ -102,7 +140,9 @@ func (ic *ImageCluster) saveImages(uploadedImages []models.UploadedImage, imageD
 		}
 		items = append(items, itemRecord{
 			ID:        fmt.Sprintf("img_%d", i),
+			Name:      img.Filename,
 			ImagePath: imagePath,
+			Hash:      fmt.Sprintf("%x", sha256.Sum256(img.Data)),
 		})
 	}
 	return items, nil
@@ -120,8 +160,18 @@ type embResult struct {
 	err       error
 }
 
-// generateEmbeddings runs CLIP inference in a bounded worker pool.
-func (ic *ImageCluster) generateEmbeddings(items []itemRecord) ([][]float32, []string, error) {
+// embedOutput holds the successfully embedded items (with their embeddings in
+// parallel order) and the images that failed, with reasons.
+type embedOutput struct {
+	items   []itemRecord
+	embs    [][]float32
+	skipped []models.SkippedImage
+}
+
+// generateEmbeddings runs CLIP inference in a bounded worker pool. Images
+// that fail to embed (e.g. undecodable formats such as HEIC) are skipped and
+// reported; the call errors only when no image can be embedded at all.
+func (ic *ImageCluster) generateEmbeddings(items []itemRecord) (*embedOutput, error) {
 	n := len(items)
 	numWorkers := maxWorkers
 	if n < numWorkers {
@@ -137,7 +187,16 @@ func (ic *ImageCluster) generateEmbeddings(items []itemRecord) ([][]float32, []s
 		go func() {
 			defer wg.Done()
 			for job := range jobs {
+				if job.item.Hash != "" {
+					if emb, ok := embCache.get(job.item.Hash); ok {
+						results <- embResult{index: job.index, itemID: job.item.ID, embedding: emb}
+						continue
+					}
+				}
 				emb, err := ic.ClipModel.Embed(job.item.ImagePath)
+				if err == nil && job.item.Hash != "" {
+					embCache.put(job.item.Hash, emb)
+				}
 				results <- embResult{
 					index:     job.index,
 					itemID:    job.item.ID,
@@ -155,39 +214,38 @@ func (ic *ImageCluster) generateEmbeddings(items []itemRecord) ([][]float32, []s
 
 	go func() { wg.Wait(); close(results) }()
 
-	embeddingsList := make([][]float32, n)
-	itemIDs := make([]string, n)
-	var firstErr error
+	embeddingsByIndex := make([][]float32, n)
+	errByIndex := make([]error, n)
 	for res := range results {
-		if res.err != nil {
-			if firstErr == nil {
-				firstErr = res.err
-			}
+		embeddingsByIndex[res.index] = res.embedding
+		errByIndex[res.index] = res.err
+	}
+
+	out := &embedOutput{}
+	for i, item := range items {
+		if errByIndex[i] != nil {
+			log.Printf("ImageCluster: skipping %s: %v", item.Name, errByIndex[i])
+			out.skipped = append(out.skipped, models.SkippedImage{
+				Filename: item.Name,
+				Error:    errByIndex[i].Error(),
+			})
 			continue
 		}
-		embeddingsList[res.index] = res.embedding
-		itemIDs[res.index] = res.itemID
-	}
-	if firstErr != nil {
-		return nil, nil, firstErr
+		out.items = append(out.items, item)
+		out.embs = append(out.embs, embeddingsByIndex[i])
 	}
 
-	for i, emb := range embeddingsList {
-		if emb == nil {
-			if firstErr != nil {
-				return nil, nil, fmt.Errorf("failed to embed image at index %d: %w", i, firstErr)
-			}
-			return nil, nil, fmt.Errorf("failed to embed image at index %d: unknown error", i)
-		}
+	if len(out.items) == 0 {
+		return nil, fmt.Errorf("no images could be embedded (%d failed); first error: %v", len(out.skipped), errByIndex[0])
 	}
 
-	log.Printf("ImageCluster: embedded %d images with %d workers", n, numWorkers)
-	return embeddingsList, itemIDs, nil
+	log.Printf("ImageCluster: embedded %d/%d images with %d workers", len(out.items), n, numWorkers)
+	return out, nil
 }
 
 type clusterTitleResult struct {
-	key          string
-	details      models.ClusterDetails
+	key     string
+	details models.ClusterDetails
 }
 
 // buildClusterDetails generates titles via Ollama for each cluster in parallel.
@@ -231,7 +289,7 @@ func (ic *ImageCluster) buildClusterDetails(
 			// Pick up to 3 images closest to the cluster centroid.
 			representativeImagePaths := selectRepresentatives(imagePaths, clusterEmbs, 3)
 
-			title, catchyPhrase, err := ic.OllamaClient.GenerateClusterTitle(ctx, representativeImagePaths, 3, 3)
+			title, catchyPhrase, err := ic.OllamaClient.GenerateClusterTitle(ctx, representativeImagePaths)
 			if err != nil {
 				log.Printf("ImageCluster: title generation failed for %s: %v — using fallback", key, err)
 				title = fmt.Sprintf("Cluster %d", clusterID)

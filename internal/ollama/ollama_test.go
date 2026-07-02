@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -135,107 +136,128 @@ func TestCalculateBackoff_CapsAtMaxBackoff(t *testing.T) {
 
 // --- GenerateClusterTitle with mock server ---------------------------------
 
-func TestGenerateClusterTitle_MockServer(t *testing.T) {
-	want := titleResponse{Title: "Beach Day", CatchyPhrase: "Sun and sand"}
-	body, _ := json.Marshal(struct {
-		Response string `json:"response"`
-		Done     bool   `json:"done"`
-	}{
-		Response: `{"title": "Beach Day", "catchy_phrase": "Sun and sand"}`,
-		Done:     true,
-	})
+// writeTempImage writes arbitrary bytes to a temp file; GenerateClusterTitle
+// only base64-encodes the bytes, so any content works.
+func writeTempImage(t *testing.T, content string) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "*.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(content)
+	f.Close()
+	return f.Name()
+}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func mockGenerateServer(t *testing.T, response string, callCount *int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/generate" {
 			http.NotFound(w, r)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(body)
-	}))
-	defer srv.Close()
-
-	c := &Client{
-		baseURL:    srv.URL,
-		model:      "test-model",
-		httpClient: &http.Client{Timeout: 5 * time.Second},
-	}
-
-	// GenerateClusterTitle needs image files. Since we pass maxImages=0 images
-	// (empty slice), it returns early with "Untitled". Instead, we pass a real
-	// temp image file path — but that's complex for a unit test. We test via
-	// generate() directly with no images by using retries=1 and no image paths
-	// while verifying title/phrase come back correctly via a two-step approach:
-	// call generate() directly.
-	ctx := context.Background()
-	resp, err := c.generate(ctx, "test prompt", []string{})
-	if err != nil {
-		t.Fatalf("generate: %v", err)
-	}
-	jsonStr := extractJSON(resp)
-	var result titleResponse
-	if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if result.Title != want.Title {
-		t.Errorf("title = %q, want %q", result.Title, want.Title)
-	}
-	if result.CatchyPhrase != want.CatchyPhrase {
-		t.Errorf("catchy_phrase = %q, want %q", result.CatchyPhrase, want.CatchyPhrase)
-	}
-}
-
-func TestGenerateClusterTitle_InvalidJSON(t *testing.T) {
-	// Mock server returns invalid JSON in the response field — verify that
-	// GenerateClusterTitle retries and ultimately returns an error after exhausting retries.
-	callCount := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
+		if callCount != nil {
+			*callCount++
+		}
 		body, _ := json.Marshal(struct {
 			Response string `json:"response"`
 			Done     bool   `json:"done"`
-		}{
-			Response: "not json at all",
-			Done:     true,
-		})
+		}{Response: response, Done: true})
 		w.Header().Set("Content-Type", "application/json")
+		w.Write(body)
+	}))
+}
+
+func TestNewClient_TrimsTrailingSlashAndSetsDefaults(t *testing.T) {
+	c := NewClient("http://example.com:1234/", "some-model")
+	if c.baseURL != "http://example.com:1234" {
+		t.Errorf("baseURL = %q, want trailing slash trimmed", c.baseURL)
+	}
+	if c.model != "some-model" {
+		t.Errorf("model = %q", c.model)
+	}
+	if c.maxImages < 1 || c.retries < 1 {
+		t.Errorf("defaults not set: maxImages=%d retries=%d", c.maxImages, c.retries)
+	}
+}
+
+func TestGenerateClusterTitle_ReturnsTitleAndPhrase(t *testing.T) {
+	srv := mockGenerateServer(t, `{"title": "Beach Day", "catchy_phrase": "Sun and sand"}`, nil)
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "test-model")
+	img := writeTempImage(t, "fake image bytes")
+
+	title, phrase, err := c.GenerateClusterTitle(context.Background(), []string{img})
+	if err != nil {
+		t.Fatalf("GenerateClusterTitle: %v", err)
+	}
+	if title != "Beach Day" {
+		t.Errorf("title = %q, want %q", title, "Beach Day")
+	}
+	if phrase != "Sun and sand" {
+		t.Errorf("phrase = %q, want %q", phrase, "Sun and sand")
+	}
+}
+
+func TestGenerateClusterTitle_ErrorAfterExhaustedRetries(t *testing.T) {
+	callCount := 0
+	srv := mockGenerateServer(t, "not json at all", &callCount)
+	defer srv.Close()
+
+	c := NewClient(srv.URL, "test-model")
+	c.retries = 1 // avoid backoff sleeps in tests
+	img := writeTempImage(t, "fake image bytes")
+
+	title, phrase, err := c.GenerateClusterTitle(context.Background(), []string{img})
+	if err == nil {
+		t.Fatal("expected error after exhausting retries with invalid JSON, got nil")
+	}
+	// Failures must not fabricate placeholder values — the caller owns fallbacks.
+	if title != "" || phrase != "" {
+		t.Errorf("got title=%q phrase=%q, want empty strings on error", title, phrase)
+	}
+	if callCount != 1 {
+		t.Errorf("expected 1 call to mock server, got %d", callCount)
+	}
+}
+
+func TestGenerateClusterTitle_SendsAtMostMaxImages(t *testing.T) {
+	var gotImages int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req generateRequest
+		json.NewDecoder(r.Body).Decode(&req)
+		gotImages = len(req.Images)
+		body, _ := json.Marshal(struct {
+			Response string `json:"response"`
+			Done     bool   `json:"done"`
+		}{Response: `{"title": "T", "catchy_phrase": "P"}`, Done: true})
 		w.Write(body)
 	}))
 	defer srv.Close()
 
-	c := &Client{
-		baseURL:    srv.URL,
-		model:      "test-model",
-		httpClient: &http.Client{Timeout: 5 * time.Second},
-	}
+	c := NewClient(srv.URL, "test-model")
+	c.maxImages = 2
 
-	// We cannot call GenerateClusterTitle with image files in unit tests, so
-	// we verify the retry logic via generate() + extractJSON + Unmarshal manually
-	// for 3 simulated attempts.
-	ctx := context.Background()
-	retries := 3
-	var lastErr error
-	for attempt := 0; attempt < retries; attempt++ {
-		resp, err := c.generate(ctx, "prompt", []string{})
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		jsonStr := extractJSON(resp)
-		var result titleResponse
-		if err := json.Unmarshal([]byte(jsonStr), &result); err != nil {
-			lastErr = err
-			continue
-		}
-		lastErr = nil
-		break
+	paths := []string{
+		writeTempImage(t, "a"),
+		writeTempImage(t, "b"),
+		writeTempImage(t, "c"),
+		writeTempImage(t, "d"),
 	}
+	if _, _, err := c.GenerateClusterTitle(context.Background(), paths); err != nil {
+		t.Fatalf("GenerateClusterTitle: %v", err)
+	}
+	if gotImages != 2 {
+		t.Errorf("server received %d images, want 2 (maxImages)", gotImages)
+	}
+}
 
-	if lastErr == nil {
-		t.Error("expected an error after exhausting retries with invalid JSON, got nil")
-	}
-	if callCount != retries {
-		t.Errorf("expected %d calls to mock server, got %d", retries, callCount)
+func TestGenerateClusterTitle_NoReadableImagesIsError(t *testing.T) {
+	c := NewClient("http://localhost:0", "test-model")
+	_, _, err := c.GenerateClusterTitle(context.Background(), []string{"/nonexistent/img.jpg"})
+	if err == nil {
+		t.Fatal("expected error when no image can be read, got nil")
 	}
 }
 

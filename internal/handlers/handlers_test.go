@@ -1,9 +1,14 @@
 package handlers
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"imageclust/internal/models"
 	"imageclust/internal/ollama"
+	"imageclust/internal/workflow"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,10 +24,7 @@ import (
 
 func newHealthHandlers(t *testing.T, ollamaURL, modelPath string) *Handlers {
 	t.Helper()
-	client, err := ollama.NewClient(ollamaURL, "")
-	if err != nil {
-		t.Fatalf("ollama.NewClient: %v", err)
-	}
+	client := ollama.NewClient(ollamaURL, "")
 	return &Handlers{
 		ollamaClient: client,
 		modelPath:    modelPath,
@@ -109,7 +111,7 @@ func TestHealthHandler_DegradedWhenOllamaDown(t *testing.T) {
 // --- sessionStore tests -------------------------------------------------
 
 func newTestStore() *sessionStore {
-	return &sessionStore{sessions: make(map[string]sessionEntry)}
+	return newSessionStore(sessionTTL, cleanupInterval)
 }
 
 func TestSessionStore_SetAndGet(t *testing.T) {
@@ -249,6 +251,22 @@ func TestRespondWithError(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("code = %d", w.Code)
 	}
+
+	// The error envelope must match the success envelope's "status" field
+	// (success responses use {"status": "success", ...}).
+	var body map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["status"] != "error" {
+		t.Errorf(`body["status"] = %v, want "error"`, body["status"])
+	}
+	if body["error"] != "bad input" {
+		t.Errorf(`body["error"] = %v, want "bad input"`, body["error"])
+	}
+	if _, ok := body["success"]; ok {
+		t.Error(`body should not contain legacy "success" key`)
+	}
 }
 
 // --- parseClusterSizes -------------------------------------------------
@@ -290,11 +308,17 @@ func TestParseClusterSizes_MaxBelowMin(t *testing.T) {
 // --- buildClusterResponse ----------------------------------------------
 
 func TestBuildClusterResponse(t *testing.T) {
-	details := map[string]models.ClusterDetails{
-		"Cluster-0": {Title: "Animals", CatchyPhrase: "Furry friends", Images: []string{"a.jpg", "b.jpg"}},
-		"Cluster-1": {Title: "Cities", CatchyPhrase: "Urban life", Images: []string{"c.jpg"}},
+	result := &workflow.Result{
+		Clusters: map[string]models.ClusterDetails{
+			"Cluster-0":  {Title: "Animals", CatchyPhrase: "Furry friends", Images: []string{"a.jpg", "b.jpg"}},
+			"Cluster-1":  {Title: "Cities", CatchyPhrase: "Urban life", Images: []string{"c.jpg"}},
+			"Cluster-10": {Title: "Food", CatchyPhrase: "Yum", Images: []string{"d.jpg"}},
+			"Cluster-2":  {Title: "Nature", CatchyPhrase: "Green", Images: []string{"e.jpg"}},
+		},
+		Unclustered: []string{"f.jpg"},
+		Skipped:     []models.SkippedImage{{Filename: "broken.heic", Error: "decode failed"}},
 	}
-	resp := buildClusterResponse("sess123", details)
+	resp := buildClusterResponse("sess123", result)
 
 	if resp.Status != "success" {
 		t.Errorf("Status = %q, want success", resp.Status)
@@ -302,19 +326,27 @@ func TestBuildClusterResponse(t *testing.T) {
 	if resp.SessionID != "sess123" {
 		t.Errorf("SessionID = %q, want sess123", resp.SessionID)
 	}
-	if len(resp.Clusters) != 2 {
-		t.Fatalf("len(Clusters) = %d, want 2", len(resp.Clusters))
+	if len(resp.Clusters) != 4 {
+		t.Fatalf("len(Clusters) = %d, want 4", len(resp.Clusters))
 	}
-	// Verify all cluster IDs and image lists are present.
-	byID := make(map[string]clusterPayload)
-	for _, c := range resp.Clusters {
-		byID[c.ID] = c
+
+	// Clusters must be sorted by numeric ID (10 after 2), not map order.
+	wantOrder := []string{"Cluster-0", "Cluster-1", "Cluster-2", "Cluster-10"}
+	for i, want := range wantOrder {
+		if resp.Clusters[i].ID != want {
+			t.Errorf("Clusters[%d].ID = %q, want %q", i, resp.Clusters[i].ID, want)
+		}
 	}
-	if c, ok := byID["Cluster-0"]; !ok || c.Title != "Animals" || len(c.Images) != 2 {
-		t.Errorf("Cluster-0 unexpected: %+v", byID["Cluster-0"])
+
+	if c := resp.Clusters[0]; c.Title != "Animals" || len(c.Images) != 2 {
+		t.Errorf("Cluster-0 unexpected: %+v", c)
 	}
-	if c, ok := byID["Cluster-1"]; !ok || c.Title != "Cities" || len(c.Images) != 1 {
-		t.Errorf("Cluster-1 unexpected: %+v", c)
+
+	if len(resp.Unclustered) != 1 || resp.Unclustered[0] != "f.jpg" {
+		t.Errorf("Unclustered = %v, want [f.jpg]", resp.Unclustered)
+	}
+	if len(resp.Skipped) != 1 || resp.Skipped[0].Filename != "broken.heic" {
+		t.Errorf("Skipped = %+v, want broken.heic entry", resp.Skipped)
 	}
 }
 
@@ -363,15 +395,151 @@ func TestServeImage_PathTraversal(t *testing.T) {
 	}
 }
 
-func TestClusterAndGenerate_WrongMethod(t *testing.T) {
+func TestClusterAndGenerate_RejectsOversizedBody(t *testing.T) {
+	// A request body beyond maxUploadBytes must be rejected with 413 —
+	// ParseMultipartForm's argument alone only bounds memory use, not the body.
 	h := &Handlers{store: newTestStore()}
-	for _, method := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
-		req := httptest.NewRequest(method, "/api/cluster", nil)
-		w := httptest.NewRecorder()
-		h.ClusterAndGenerate(w, req)
-		if w.Code != http.StatusMethodNotAllowed {
-			t.Errorf("%s: code = %d, want 405", method, w.Code)
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("images", "big.jpg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fw.Write(bytes.Repeat([]byte{0}, maxUploadBytes+1024))
+	mw.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/cluster", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	h.ClusterAndGenerate(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("code = %d, want 413", w.Code)
+	}
+}
+
+func TestClusterAndGenerate_RejectsTooManyImages(t *testing.T) {
+	h := &Handlers{store: newTestStore()}
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	for i := 0; i <= maxImageCount; i++ {
+		fw, err := mw.CreateFormFile("images", fmt.Sprintf("img_%d.jpg", i))
+		if err != nil {
+			t.Fatal(err)
 		}
+		fw.Write([]byte("x"))
+	}
+	mw.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/cluster", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	h.ClusterAndGenerate(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("code = %d, want 400", w.Code)
+	}
+}
+
+// --- session cleanup ----------------------------------------------------
+
+func TestSessionStore_CleanupRemovesExpiredDirs(t *testing.T) {
+	dir := t.TempDir()
+	sessDir := filepath.Join(dir, "sess")
+	if err := os.MkdirAll(sessDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	s := newSessionStore(0, 10*time.Millisecond) // ttl 0 → everything expires immediately
+	s.set("expired", sessDir)
+	go s.cleanupExpiredSessions()
+	defer s.stop()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(sessDir); os.IsNotExist(err) {
+			if _, ok := s.get("expired"); ok {
+				t.Fatal("session entry still present after dir cleanup")
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("expired session dir was not cleaned up within 2s")
+}
+
+func TestSessionStore_StopHaltsCleanup(t *testing.T) {
+	s := newSessionStore(0, 10*time.Millisecond)
+	go s.cleanupExpiredSessions()
+	s.stop()
+	// Calling stop twice must not panic.
+	s.stop()
+}
+
+// --- export ---------------------------------------------------------------
+
+func TestExportZip_StreamsClustersAndUnclustered(t *testing.T) {
+	dir := t.TempDir()
+	imagesDir := filepath.Join(dir, "images")
+	if err := os.MkdirAll(imagesDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"img_0.jpg", "img_1.jpg", "img_2.jpg"} {
+		if err := os.WriteFile(filepath.Join(imagesDir, name), []byte("data-"+name), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s := newTestStore()
+	s.set("sess", dir)
+	s.setResult("sess", &exportData{
+		clusters: []clusterPayload{
+			{ID: "Cluster-0", Title: "Animals", Images: []string{"img_0.jpg", "img_1.jpg"}},
+		},
+		unclustered: []string{"img_2.jpg"},
+	})
+	h := &Handlers{store: s}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/export?session=sess", nil)
+	w := httptest.NewRecorder()
+	h.ExportZip(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200; body: %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); ct != "application/zip" {
+		t.Errorf("Content-Type = %q, want application/zip", ct)
+	}
+
+	zr, err := zip.NewReader(bytes.NewReader(w.Body.Bytes()), int64(w.Body.Len()))
+	if err != nil {
+		t.Fatalf("zip.NewReader: %v", err)
+	}
+	got := make(map[string]bool, len(zr.File))
+	for _, f := range zr.File {
+		got[f.Name] = true
+	}
+	want := []string{
+		"01 Animals/img_0.jpg",
+		"01 Animals/img_1.jpg",
+		"unclustered/img_2.jpg",
+	}
+	for _, name := range want {
+		if !got[name] {
+			t.Errorf("zip missing entry %q; has %v", name, zr.File)
+		}
+	}
+}
+
+func TestExportZip_UnknownSession(t *testing.T) {
+	h := &Handlers{store: newTestStore()}
+	req := httptest.NewRequest(http.MethodGet, "/api/export?session=nope", nil)
+	w := httptest.NewRecorder()
+	h.ExportZip(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("code = %d, want 404", w.Code)
 	}
 }
 

@@ -158,6 +158,56 @@ func TestPreprocessImage_BlackPixelNormalization(t *testing.T) {
 	}
 }
 
+func TestPreprocessImage_CenterCropsWideImage(t *testing.T) {
+	// A 3:1 wide image: left third red, center third green, right third blue.
+	// Standard CLIP preprocessing resizes the shortest side and center-crops,
+	// so the model input must contain ONLY the green center — never a squashed
+	// version showing red and blue at the edges.
+	img := image.NewNRGBA(image.Rect(0, 0, 672, 224))
+	for y := 0; y < 224; y++ {
+		for x := 0; x < 672; x++ {
+			switch {
+			case x < 224:
+				img.SetNRGBA(x, y, color.NRGBA{R: 255, A: 255})
+			case x < 448:
+				img.SetNRGBA(x, y, color.NRGBA{G: 255, A: 255})
+			default:
+				img.SetNRGBA(x, y, color.NRGBA{B: 255, A: 255})
+			}
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("png.Encode: %v", err)
+	}
+	f, err := os.CreateTemp(t.TempDir(), "*.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Write(buf.Bytes())
+	f.Close()
+
+	data, err := preprocessImage(f.Name())
+	if err != nil {
+		t.Fatalf("preprocessImage: %v", err)
+	}
+
+	// With a correct center crop every pixel is green: R≈0 → strongly negative
+	// after normalization. A squashed resize leaves red at the left edge
+	// (R≈1 → strongly positive).
+	stride := inputSize * inputSize
+	row := inputSize / 2
+	for _, x := range []int{2, inputSize / 2, inputSize - 3} {
+		pos := row*inputSize + x
+		if data[pos] > 0 {
+			t.Errorf("R channel at x=%d is %f (>0) — edge bands leaked in; image was squashed instead of center-cropped", x, data[pos])
+		}
+		if data[stride+pos] < 0 {
+			t.Errorf("G channel at x=%d is %f (<0) — expected green center crop", x, data[stride+pos])
+		}
+	}
+}
+
 func TestPreprocessImage_NonexistentFile(t *testing.T) {
 	_, err := preprocessImage("/nonexistent/path/image.jpg")
 	if err == nil {

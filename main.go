@@ -1,13 +1,18 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"imageclust/internal/clip"
 	"imageclust/internal/handlers"
 	"imageclust/internal/ollama"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"runtime"
+	"syscall"
+	"time"
 
 	"github.com/gorilla/mux"
 )
@@ -39,16 +44,12 @@ func main() {
 	log.Printf("CLIP model loaded — embedding dim: %d", clipModel.EmbeddingDim)
 
 	// --- Ollama client ---
-	ollamaHost := os.Getenv("OLLAMA_HOST")
-	ollamaModel := os.Getenv("OLLAMA_MODEL")
-	ollamaClient, err := ollama.NewClient(ollamaHost, ollamaModel)
-	if err != nil {
-		log.Fatalf("failed to create Ollama client: %v", err)
-	}
+	ollamaClient := ollama.NewClient(os.Getenv("OLLAMA_HOST"), os.Getenv("OLLAMA_MODEL"))
 	log.Printf("Ollama client ready")
 
 	// --- HTTP routing ---
-	h := handlers.NewWithModelPath(clipModel, ollamaClient, modelPath)
+	h := handlers.New(clipModel, ollamaClient, modelPath)
+	defer h.Close()
 
 	router := mux.NewRouter()
 	router.Use(handlers.EnableCORS)
@@ -58,13 +59,44 @@ func main() {
 	api := router.PathPrefix("/api").Subrouter()
 	api.HandleFunc("/cluster", h.ClusterAndGenerate).Methods(http.MethodPost, http.MethodOptions)
 	api.HandleFunc("/image/{imageName:.*}", h.ServeImage).Methods(http.MethodGet)
+	api.HandleFunc("/export", h.ExportZip).Methods(http.MethodGet)
 
 	spa := handlers.SpaHandler{StaticPath: "frontend/dist", IndexPath: "index.html"}
 	router.PathPrefix("/").Handler(spa)
 
-	addr := ":8080"
-	log.Printf("Server listening on %s", addr)
-	if err := http.ListenAndServe(addr, router); err != nil {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	server := &http.Server{
+		Addr:    ":" + port,
+		Handler: router,
+		// The cluster endpoint runs CLIP + Ollama inference and can
+		// legitimately take minutes, so no WriteTimeout is set.
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
+
+	// Shut down gracefully on SIGINT/SIGTERM so deferred cleanup
+	// (model Close, session cleanup stop) actually runs.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	errCh := make(chan error, 1)
+	go func() {
+		log.Printf("Server listening on :%s", port)
+		errCh <- server.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errCh:
 		log.Fatalf("server error: %v", err)
+	case <-ctx.Done():
+		log.Println("shutting down…")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil && !errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("shutdown error: %v", err)
+		}
 	}
 }

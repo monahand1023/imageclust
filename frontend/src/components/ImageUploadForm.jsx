@@ -55,7 +55,12 @@ const ImageUploadForm = () => {
         throw new Error(data.error || 'Upload failed');
       }
 
-      setResult({ sessionId: data.sessionId, clusters: data.clusters });
+      setResult({
+        sessionId: data.sessionId,
+        clusters: data.clusters,
+        unclustered: data.unclustered || [],
+        skipped: data.skipped || [],
+      });
     } catch (err) {
       setError(err.message || 'Failed to process images');
     } finally {
@@ -205,7 +210,12 @@ const ImageUploadForm = () => {
       )}
 
       {result && (
-        <ClusterResults clusters={result.clusters} sessionId={result.sessionId} />
+        <ClusterResults
+          clusters={result.clusters}
+          unclustered={result.unclustered}
+          skipped={result.skipped}
+          sessionId={result.sessionId}
+        />
       )}
     </div>
   );

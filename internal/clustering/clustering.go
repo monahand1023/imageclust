@@ -31,8 +31,11 @@ func NewCluster(index int, embedding []float32) Cluster {
 
 // MergeClusters merges two clusters into a new cluster.
 func MergeClusters(a, b Cluster) Cluster {
-	// New indices
-	indices := append(a.Indices, b.Indices...)
+	// New indices — copied into a fresh slice so neither input's backing
+	// array is written to (append(a.Indices, ...) would alias it).
+	indices := make([]int, 0, len(a.Indices)+len(b.Indices))
+	indices = append(indices, a.Indices...)
+	indices = append(indices, b.Indices...)
 
 	// New size
 	size := a.Size + b.Size
@@ -210,16 +213,18 @@ func CalculateOptimalClusters(totalItems, minSize, maxSize int) (int, error) {
 // - minSize: Minimum number of items per cluster.
 // - maxSize: Maximum number of items per cluster.
 // Returns:
-// - A map where keys are cluster IDs (starting from 0) and values are slices of product reference IDs.
-// - An error if clustering fails.
-func PerformClusteringWithConstraints(embeddings [][]float32, productReferenceIDs []string, minSize, maxSize int) (map[int][]string, error) {
+//   - A map where keys are cluster IDs (starting from 0) and values are slices of product reference IDs.
+//   - A slice of reference IDs that could not be placed in a valid cluster
+//     (leftovers smaller than minSize) — never silently dropped.
+//   - An error if clustering fails.
+func PerformClusteringWithConstraints(embeddings [][]float32, productReferenceIDs []string, minSize, maxSize int) (map[int][]string, []string, error) {
 	totalItems := len(embeddings)
 	log.Printf("Total items for clustering: %d", totalItems)
 
 	// Calculate the optimal number of clusters
 	nClusters, err := CalculateOptimalClusters(totalItems, minSize, maxSize)
 	if err != nil {
-		return nil, fmt.Errorf("clustering constraint error: %w", err)
+		return nil, nil, fmt.Errorf("clustering constraint error: %w", err)
 	}
 	log.Printf("Optimal number of clusters calculated: %d", nClusters)
 
@@ -232,144 +237,65 @@ func PerformClusteringWithConstraints(embeddings [][]float32, productReferenceID
 	// Compute initial distance matrix
 	distanceMatrix, err := ComputeInitialDistanceMatrix(clusters)
 	if err != nil {
-		return nil, fmt.Errorf("failed to compute initial distance matrix: %w", err)
+		return nil, nil, fmt.Errorf("failed to compute initial distance matrix: %w", err)
 	}
 
 	// Hierarchical clustering using Ward's method with size constraints
-	for len(clusters) > nClusters {
-		i, j := FindClosestClusters(distanceMatrix)
-		if i == -1 || j == -1 {
-			log.Println("No more clusters to merge.")
-			break
-		}
-
-		// Check if merging would exceed maxSize
-		if clusters[i].Size+clusters[j].Size > maxSize {
-			// Mark this pair as non-mergeable by setting their distance to infinity
-			distanceMatrix[i][j] = math.MaxFloat32
-			distanceMatrix[j][i] = math.MaxFloat32
-			log.Printf("Skipping merge of clusters %d and %d to avoid exceeding maxSize (%d)", i, j, maxSize)
-			continue
-		}
-
-		// Merge clusters[i] and clusters[j]
-		newCluster := MergeClusters(clusters[i], clusters[j])
-
-		// Remove old clusters and add the new merged cluster
-		clusters = RemoveClusters(clusters, i, j)
-		clusters = append(clusters, newCluster)
-
-		// Update the distance matrix with the new cluster
-		distanceMatrix, err = UpdateDistanceMatrix(distanceMatrix, clusters, newCluster, i, j)
-		if err != nil {
-			return nil, fmt.Errorf("failed to update distance matrix: %w", err)
-		}
-		log.Printf("Merged clusters %d and %d into new cluster with size %d", i, j, newCluster.Size)
+	clusters, err = mergeUntil(clusters, distanceMatrix, nClusters, maxSize)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	// After initial clustering, handle any clusters exceeding maxSize
-	finalClusters := make([]Cluster, 0, len(clusters))
-	for _, cluster := range clusters {
-		if cluster.Size > maxSize {
-			// Split the oversized cluster
-			subClusters, err := splitCluster(cluster, embeddings, maxSize)
-			if err != nil {
-				return nil, fmt.Errorf("failed to split cluster of size %d: %w", cluster.Size, err)
-			}
-			finalClusters = append(finalClusters, subClusters...)
-		} else {
-			finalClusters = append(finalClusters, cluster)
-		}
-	}
-
-	// Convert clusters to map with product reference IDs
+	// Convert clusters to map with product reference IDs. mergeUntil never
+	// merges past maxSize, so no cluster can exceed it here. Clusters below
+	// minSize are reported as unclustered rather than silently dropped.
 	clusterMap := make(map[int][]string)
+	var unclustered []string
 	clusterID := 0
-	for _, cluster := range finalClusters {
-		if cluster.Size < minSize {
-			log.Printf("Skipping cluster %d with size %d (less than minSize %d)", clusterID, cluster.Size, minSize)
-			continue
-		}
-
-		// Convert cluster indices to product reference IDs
+	for _, cluster := range clusters {
 		refs := make([]string, len(cluster.Indices))
 		for i, idx := range cluster.Indices {
 			refs[i] = productReferenceIDs[idx]
+		}
+		if cluster.Size < minSize {
+			unclustered = append(unclustered, refs...)
+			continue
 		}
 		clusterMap[clusterID] = refs
 		clusterID++
 	}
 
-	log.Printf("Clustering successful. Formed %d valid clusters.", len(clusterMap))
-	return clusterMap, nil
+	log.Printf("Clustering successful. Formed %d valid clusters, %d unclustered items.", len(clusterMap), len(unclustered))
+	return clusterMap, unclustered, nil
 }
 
-// splitCluster splits an oversized cluster into smaller clusters respecting maxSize.
-// It uses the same hierarchical clustering approach recursively.
-// Parameters:
-// - cluster: The oversized cluster to split.
-// - embeddings: Slice of all embedding vectors.
-// - maxSize: Maximum number of items per cluster.
-// Returns:
-// - A slice of new clusters resulting from the split.
-// - An error if the split fails.
-func splitCluster(cluster Cluster, embeddings [][]float32, maxSize int) ([]Cluster, error) {
-	subEmbeddings := make([][]float32, len(cluster.Indices))
-	for i, idx := range cluster.Indices {
-		subEmbeddings[i] = embeddings[idx]
-	}
-
-	// Calculate optimal number of sub-clusters
-	subTotalItems := len(subEmbeddings)
-	nSubClusters, err := CalculateOptimalClusters(subTotalItems, 1, maxSize) // Assuming minSize=1 for sub-clusters
-	if err != nil {
-		return nil, fmt.Errorf("error calculating sub-clusters: %w", err)
-	}
-	log.Printf("Splitting cluster into %d sub-clusters.", nSubClusters)
-
-	// Initialize sub-clusters
-	subClusters := make([]Cluster, subTotalItems)
-	for i := 0; i < subTotalItems; i++ {
-		subClusters[i] = NewCluster(i, subEmbeddings[i])
-	}
-
-	// Compute initial distance matrix for sub-clusters
-	subDistanceMatrix, err := ComputeInitialDistanceMatrix(subClusters)
-	if err != nil {
-		return nil, fmt.Errorf("failed to compute sub-cluster distance matrix: %w", err)
-	}
-
-	// Perform hierarchical clustering on sub-clusters
-	for len(subClusters) > nSubClusters {
-		i, j := FindClosestClusters(subDistanceMatrix)
+// mergeUntil repeatedly merges the two closest clusters until targetN clusters
+// remain, never letting a merge exceed maxSize. Pairs whose merge would exceed
+// maxSize are marked non-mergeable; the loop stops early when nothing mergeable
+// is left. It mutates and returns both the clusters slice and distance matrix.
+func mergeUntil(clusters []Cluster, distanceMatrix [][]float32, targetN, maxSize int) ([]Cluster, error) {
+	for len(clusters) > targetN {
+		i, j := FindClosestClusters(distanceMatrix)
 		if i == -1 || j == -1 {
-			log.Println("No more sub-clusters to merge.")
 			break
 		}
 
-		// Check if merging would exceed maxSize
-		if subClusters[i].Size+subClusters[j].Size > maxSize {
+		if clusters[i].Size+clusters[j].Size > maxSize {
 			// Mark this pair as non-mergeable by setting their distance to infinity
-			subDistanceMatrix[i][j] = math.MaxFloat32
-			subDistanceMatrix[j][i] = math.MaxFloat32
-			log.Printf("Skipping merge of sub-clusters %d and %d to avoid exceeding maxSize (%d)", i, j, maxSize)
+			distanceMatrix[i][j] = math.MaxFloat32
+			distanceMatrix[j][i] = math.MaxFloat32
 			continue
 		}
 
-		// Merge subClusters[i] and subClusters[j]
-		newSubCluster := MergeClusters(subClusters[i], subClusters[j])
+		newCluster := MergeClusters(clusters[i], clusters[j])
+		clusters = RemoveClusters(clusters, i, j)
+		clusters = append(clusters, newCluster)
 
-		// Remove old sub-clusters and add the new merged sub-cluster
-		subClusters = RemoveClusters(subClusters, i, j)
-		subClusters = append(subClusters, newSubCluster)
-
-		// Update the distance matrix with the new sub-cluster
-		subDistanceMatrix, err = UpdateDistanceMatrix(subDistanceMatrix, subClusters, newSubCluster, i, j)
+		var err error
+		distanceMatrix, err = UpdateDistanceMatrix(distanceMatrix, clusters, newCluster, i, j)
 		if err != nil {
-			return nil, fmt.Errorf("failed to update sub-cluster distance matrix: %w", err)
+			return nil, fmt.Errorf("failed to update distance matrix: %w", err)
 		}
-		log.Printf("Merged sub-clusters %d and %d into new sub-cluster with size %d", i, j, newSubCluster.Size)
 	}
-
-	return subClusters, nil
+	return clusters, nil
 }

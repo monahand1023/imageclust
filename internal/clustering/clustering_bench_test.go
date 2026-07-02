@@ -38,7 +38,7 @@ func benchmarkClustering(b *testing.B, n int) {
 	ids := randIDs(n)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := PerformClusteringWithConstraints(embs, ids, 3, 8)
+		_, _, err := PerformClusteringWithConstraints(embs, ids, 3, 8)
 		if err != nil {
 			b.Fatal(err)
 		}

@@ -168,7 +168,75 @@ describe('App', () => {
     })
   })
 
-  // 12 ── "Start over" button resets to the upload form
+  // 12 ── unclustered images get their own section
+  it('renders an Unclustered section when the API reports unclustered images', async () => {
+    mockFetch({
+      sessionId: 'sess-u',
+      clusters: [
+        { id: 'Cluster-0', title: 'Dogs', catchy_phrase: '', images: ['img_0.jpg'] },
+      ],
+      unclustered: ['img_5.jpg', 'img_6.jpg'],
+    })
+
+    render(<App />)
+    const fileInput = document.getElementById('file-input')
+    fireEvent.change(fileInput, { target: { files: [makeImageFile('a.jpg')] } })
+    await waitFor(() => screen.getByText('a.jpg'))
+
+    fireEvent.click(screen.getByRole('button', { name: /cluster images/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText(/unclustered/i)).toBeInTheDocument()
+      expect(screen.getByText(/didn't fit/i)).toBeInTheDocument()
+    })
+  })
+
+  // 13 ── skipped files are surfaced as a warning
+  it('lists files that could not be processed', async () => {
+    mockFetch({
+      sessionId: 'sess-s',
+      clusters: [
+        { id: 'Cluster-0', title: 'Cats', catchy_phrase: '', images: ['img_0.jpg'] },
+      ],
+      skipped: [{ filename: 'broken.heic', error: 'decode failed' }],
+    })
+
+    render(<App />)
+    const fileInput = document.getElementById('file-input')
+    fireEvent.change(fileInput, { target: { files: [makeImageFile('a.jpg')] } })
+    await waitFor(() => screen.getByText('a.jpg'))
+
+    fireEvent.click(screen.getByRole('button', { name: /cluster images/i }))
+
+    await waitFor(() => {
+      expect(screen.getByText(/could not be processed/i)).toBeInTheDocument()
+      expect(screen.getByText(/broken\.heic/)).toBeInTheDocument()
+    })
+  })
+
+  // 14 ── download ZIP link points at the export endpoint
+  it('offers a Download ZIP link for the session', async () => {
+    mockFetch({
+      sessionId: 'sess-9',
+      clusters: [
+        { id: 'Cluster-0', title: 'Trips', catchy_phrase: '', images: ['img_0.jpg'] },
+      ],
+    })
+
+    render(<App />)
+    const fileInput = document.getElementById('file-input')
+    fireEvent.change(fileInput, { target: { files: [makeImageFile('a.jpg')] } })
+    await waitFor(() => screen.getByText('a.jpg'))
+
+    fireEvent.click(screen.getByRole('button', { name: /cluster images/i }))
+
+    await waitFor(() => {
+      const link = screen.getByRole('link', { name: /download zip/i })
+      expect(link).toHaveAttribute('href', '/api/export?session=sess-9')
+    })
+  })
+
+  // 15 ── "Start over" button resets to the upload form
   it('shows "Start over" after results and resets on click', async () => {
     mockFetch({
       sessionId: 'sess-456',

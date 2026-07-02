@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"archive/zip"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +31,7 @@ const (
 	sessionTTL      = 1 * time.Hour
 	cleanupInterval = 10 * time.Minute
 	maxUploadBytes  = 32 << 20 // 32 MB
+	maxImageCount   = 200
 )
 
 // Handlers holds shared dependencies injected at startup.
@@ -39,22 +42,23 @@ type Handlers struct {
 	store        *sessionStore
 }
 
-// New returns a Handlers instance wired with the given model and Ollama client.
-func New(clipModel *clip.Model, ollamaClient *ollama.Client) *Handlers {
-	s := &sessionStore{sessions: make(map[string]sessionEntry)}
+// New returns a Handlers instance wired with the given model and Ollama
+// client. modelPath is used by the health check. Call Close to stop the
+// background session cleanup.
+func New(clipModel *clip.Model, ollamaClient *ollama.Client, modelPath string) *Handlers {
+	s := newSessionStore(sessionTTL, cleanupInterval)
 	go s.cleanupExpiredSessions()
 	return &Handlers{
 		clipModel:    clipModel,
 		ollamaClient: ollamaClient,
+		modelPath:    modelPath,
 		store:        s,
 	}
 }
 
-// NewWithModelPath is like New but also stores the model path for health checks.
-func NewWithModelPath(clipModel *clip.Model, ollamaClient *ollama.Client, modelPath string) *Handlers {
-	h := New(clipModel, ollamaClient)
-	h.modelPath = modelPath
-	return h
+// Close stops the background session-cleanup goroutine.
+func (h *Handlers) Close() {
+	h.store.stop()
 }
 
 // --- Health handler -------------------------------------------------------
@@ -117,24 +121,49 @@ func (h *Handlers) HealthHandler(w http.ResponseWriter, r *http.Request) {
 
 // --- Session store --------------------------------------------------------
 
+// exportData is the per-session clustering outcome kept for ZIP export.
+type exportData struct {
+	clusters    []clusterPayload
+	unclustered []string
+}
+
 type sessionEntry struct {
 	tempDir   string
 	createdAt time.Time
+	result    *exportData // nil until a clustering run completes
 }
 
 type sessionStore struct {
 	sessions map[string]sessionEntry
 	mu       sync.RWMutex
+	ttl      time.Duration
+	interval time.Duration
+	done     chan struct{}
+	stopOnce sync.Once
+}
+
+func newSessionStore(ttl, interval time.Duration) *sessionStore {
+	return &sessionStore{
+		sessions: make(map[string]sessionEntry),
+		ttl:      ttl,
+		interval: interval,
+		done:     make(chan struct{}),
+	}
 }
 
 func (s *sessionStore) cleanupExpiredSessions() {
-	ticker := time.NewTicker(cleanupInterval)
+	ticker := time.NewTicker(s.interval)
 	defer ticker.Stop()
-	for range ticker.C {
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-ticker.C:
+		}
 		s.mu.Lock()
 		var toDelete []string
 		for id, entry := range s.sessions {
-			if time.Since(entry.createdAt) > sessionTTL {
+			if time.Since(entry.createdAt) > s.ttl {
 				toDelete = append(toDelete, id)
 			}
 		}
@@ -150,6 +179,11 @@ func (s *sessionStore) cleanupExpiredSessions() {
 	}
 }
 
+// stop halts the cleanup goroutine. Safe to call multiple times.
+func (s *sessionStore) stop() {
+	s.stopOnce.Do(func() { close(s.done) })
+}
+
 func (s *sessionStore) set(id, dir string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -161,6 +195,26 @@ func (s *sessionStore) get(id string) (string, bool) {
 	defer s.mu.RUnlock()
 	e, ok := s.sessions[id]
 	return e.tempDir, ok
+}
+
+// setResult attaches the clustering outcome to an existing session.
+func (s *sessionStore) setResult(id string, result *exportData) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.sessions[id]; ok {
+		e.result = result
+		s.sessions[id] = e
+	}
+}
+
+func (s *sessionStore) getResult(id string) (string, *exportData, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e, ok := s.sessions[id]
+	if !ok || e.result == nil {
+		return "", nil, false
+	}
+	return e.tempDir, e.result, true
 }
 
 func generateSessionID() (string, error) {
@@ -191,9 +245,11 @@ func EnableCORS(next http.Handler) http.Handler {
 
 // clusterResponse is the JSON shape returned after successful clustering.
 type clusterResponse struct {
-	Status    string           `json:"status"`
-	SessionID string           `json:"sessionId"`
-	Clusters  []clusterPayload `json:"clusters"`
+	Status      string                `json:"status"`
+	SessionID   string                `json:"sessionId"`
+	Clusters    []clusterPayload      `json:"clusters"`
+	Unclustered []string              `json:"unclustered,omitempty"`
+	Skipped     []models.SkippedImage `json:"skipped,omitempty"`
 }
 
 type clusterPayload struct {
@@ -203,15 +259,26 @@ type clusterPayload struct {
 	Images       []string `json:"images"`
 }
 
-// ClusterAndGenerate handles POST /api/cluster.
+// ClusterAndGenerate handles POST /api/cluster. Method restriction is
+// enforced by the router.
 func (h *Handlers) ClusterAndGenerate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		respondWithError(w, http.StatusMethodNotAllowed, "method not allowed")
+	// ParseMultipartForm's argument only bounds memory use; MaxBytesReader
+	// actually caps the request body.
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			respondWithError(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("upload exceeds %d MB limit", maxUploadBytes>>20))
+			return
+		}
+		respondWithError(w, http.StatusBadRequest, "failed to parse form data")
 		return
 	}
 
-	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
-		respondWithError(w, http.StatusBadRequest, "failed to parse form data")
+	if n := len(r.MultipartForm.File["images"]); n > maxImageCount {
+		respondWithError(w, http.StatusBadRequest,
+			fmt.Sprintf("too many images: %d (max %d)", n, maxImageCount))
 		return
 	}
 
@@ -244,13 +311,18 @@ func (h *Handlers) ClusterAndGenerate(w http.ResponseWriter, r *http.Request) {
 	minClusterSize, maxClusterSize := parseClusterSizes(r, 3, 6)
 
 	ic := workflow.NewImageCluster(minClusterSize, maxClusterSize, tempDir, h.clipModel, h.ollamaClient)
-	clusterDetails, err := ic.Run(r.Context(), uploadedImages)
+	result, err := ic.Run(r.Context(), uploadedImages)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	respondWithJSON(w, http.StatusOK, buildClusterResponse(sessionID, clusterDetails))
+	resp := buildClusterResponse(sessionID, result)
+	h.store.setResult(sessionID, &exportData{
+		clusters:    resp.Clusters,
+		unclustered: resp.Unclustered,
+	})
+	respondWithJSON(w, http.StatusOK, resp)
 }
 
 func readUploadedImages(r *http.Request) ([]models.UploadedImage, []string) {
@@ -287,9 +359,9 @@ func parseClusterSizes(r *http.Request, defaultMin, defaultMax int) (int, int) {
 	return min, max
 }
 
-func buildClusterResponse(sessionID string, details map[string]models.ClusterDetails) clusterResponse {
-	payloads := make([]clusterPayload, 0, len(details))
-	for id, d := range details {
+func buildClusterResponse(sessionID string, result *workflow.Result) clusterResponse {
+	payloads := make([]clusterPayload, 0, len(result.Clusters))
+	for id, d := range result.Clusters {
 		payloads = append(payloads, clusterPayload{
 			ID:           id,
 			Title:        d.Title,
@@ -297,11 +369,27 @@ func buildClusterResponse(sessionID string, details map[string]models.ClusterDet
 			Images:       d.Images,
 		})
 	}
+	// Map iteration order is random; sort by the numeric suffix of
+	// "Cluster-N" so the UI gets a stable ordering.
+	sort.Slice(payloads, func(i, j int) bool {
+		return clusterNum(payloads[i].ID) < clusterNum(payloads[j].ID)
+	})
 	return clusterResponse{
-		Status:    "success",
-		SessionID: sessionID,
-		Clusters:  payloads,
+		Status:      "success",
+		SessionID:   sessionID,
+		Clusters:    payloads,
+		Unclustered: result.Unclustered,
+		Skipped:     result.Skipped,
 	}
+}
+
+// clusterNum extracts N from "Cluster-N"; unparseable IDs sort last.
+func clusterNum(id string) int {
+	n, err := strconv.Atoi(strings.TrimPrefix(id, "Cluster-"))
+	if err != nil {
+		return int(^uint(0) >> 1)
+	}
+	return n
 }
 
 // --- Image handler --------------------------------------------------------
@@ -320,27 +408,12 @@ func (h *Handlers) ServeImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	imageName := utils.SanitizeFilename(mux.Vars(r)["imageName"])
-	imagesDir := filepath.Join(tempDir, "images")
-	imagePath := filepath.Join(imagesDir, imageName)
-
 	// Guard against path traversal: SanitizeFilename allows '.' so ".." survives.
-	// Use absolute path prefix check to ensure the resolved path stays inside
-	// the session's images directory.
-	absImagePath, err := filepath.Abs(imagePath)
-	if err != nil {
+	if imageName == "" || !filepath.IsLocal(imageName) {
 		http.Error(w, "invalid image path", http.StatusBadRequest)
 		return
 	}
-	absImagesDir, err := filepath.Abs(imagesDir)
-	if err != nil {
-		http.Error(w, "invalid image path", http.StatusBadRequest)
-		return
-	}
-	// Add separator to prevent /foo/bar matching /foo/barbaz
-	if !strings.HasPrefix(absImagePath+string(filepath.Separator), absImagesDir+string(filepath.Separator)) {
-		http.Error(w, "invalid image path", http.StatusBadRequest)
-		return
-	}
+	imagePath := filepath.Join(tempDir, "images", imageName)
 
 	if _, err := os.Stat(imagePath); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -364,6 +437,77 @@ func (h *Handlers) ServeImage(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, imagePath)
 }
 
+// --- Export handler ---------------------------------------------------------
+
+// ExportZip handles GET /api/export?session=<id>. It streams a ZIP archive
+// with one folder per cluster (named "NN Title") plus an "unclustered" folder.
+func (h *Handlers) ExportZip(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.URL.Query().Get("session")
+	if sessionID == "" {
+		http.Error(w, "missing session parameter", http.StatusBadRequest)
+		return
+	}
+	tempDir, data, ok := h.store.getResult(sessionID)
+	if !ok {
+		http.Error(w, "invalid or expired session", http.StatusNotFound)
+		return
+	}
+	imagesDir := filepath.Join(tempDir, "images")
+
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="imageclust-clusters.zip"`)
+
+	zw := zip.NewWriter(w)
+	addFile := func(zipPath, filename string) {
+		if !filepath.IsLocal(filename) {
+			return
+		}
+		src, err := os.Open(filepath.Join(imagesDir, filename))
+		if err != nil {
+			log.Printf("handlers: export: skipping %s: %v", filename, err)
+			return
+		}
+		defer src.Close()
+		dst, err := zw.Create(zipPath)
+		if err != nil {
+			log.Printf("handlers: export: create %s: %v", zipPath, err)
+			return
+		}
+		if _, err := io.Copy(dst, src); err != nil {
+			log.Printf("handlers: export: copy %s: %v", zipPath, err)
+		}
+	}
+
+	for i, c := range data.clusters {
+		folder := fmt.Sprintf("%02d %s", i+1, zipFolderName(c.Title))
+		for _, img := range c.Images {
+			addFile(folder+"/"+img, img)
+		}
+	}
+	for _, img := range data.unclustered {
+		addFile("unclustered/"+img, img)
+	}
+
+	if err := zw.Close(); err != nil {
+		log.Printf("handlers: export: close zip: %v", err)
+	}
+}
+
+// zipFolderName makes a cluster title safe as a ZIP directory name.
+func zipFolderName(title string) string {
+	title = strings.Map(func(r rune) rune {
+		switch r {
+		case '/', '\\', ':', 0:
+			return '_'
+		}
+		return r
+	}, strings.TrimSpace(title))
+	if title == "" {
+		return "cluster"
+	}
+	return title
+}
+
 // --- SPA handler ----------------------------------------------------------
 
 // SpaHandler serves the React frontend, falling back to index.html for
@@ -385,10 +529,10 @@ func (h SpaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // --- Helpers --------------------------------------------------------------
 
 func respondWithError(w http.ResponseWriter, code int, message string) {
-	respondWithJSON(w, code, map[string]interface{}{"success": false, "error": message})
+	respondWithJSON(w, code, map[string]any{"status": "error", "error": message})
 }
 
-func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
+func respondWithJSON(w http.ResponseWriter, code int, payload any) {
 	b, err := json.Marshal(payload)
 	if err != nil {
 		http.Error(w, "failed to marshal response", http.StatusInternalServerError)

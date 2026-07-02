@@ -2,6 +2,8 @@
 /imageclust
 /models/
 /frontend/dist/
+/.idea/
+/build.log
 
 
 # Local secrets — never commit
