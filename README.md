@@ -1,6 +1,6 @@
 # imageclust
 
-[![CI](https://github.com/monahand1023/imageclust/actions/workflows/ci.yml/badge.svg)](https://github.com/monahand1023/imageclust/actions/workflows/ci.yml) [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/) [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white)](https://react.dev/) [![CLIP](https://img.shields.io/badge/model-CLIP%20ViT--L%2F14-purple)](.) [![License: MIT](https://img.shields.io/github/license/monahand1023/imageclust)](LICENSE)
+[![CI](https://github.com/monahand1023/imageclust/actions/workflows/ci.yml/badge.svg)](https://github.com/monahand1023/imageclust/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/monahand1023/imageclust)](https://github.com/monahand1023/imageclust/releases) [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev/) [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white)](https://react.dev/) [![CLIP](https://img.shields.io/badge/model-CLIP%20ViT--L%2F14-purple)](.) [![License: MIT](https://img.shields.io/github/license/monahand1023/imageclust)](LICENSE)
 
 Semantic image clustering that runs entirely on your local machine. Upload a collection of photos, get back labeled groups organized by what they're *about* — not just visual similarity.
 
@@ -256,6 +256,16 @@ Environment variables (all optional):
 ## Docker
 
 The Dockerfile builds a self-contained image with the Go server and React frontend. Ollama must run on the host (or another container) — the default `OLLAMA_HOST` is `http://host.docker.internal:11434`.
+
+Prebuilt images are published to GitHub Container Registry for linux/amd64 and linux/arm64 on every push, and tagged by release:
+
+```bash
+docker run -p 8080:8080 \
+  -v /path/to/models:/app/models \
+  ghcr.io/monahand1023/imageclust:latest
+```
+
+Or build it yourself:
 
 ```bash
 docker build -t imageclust .
