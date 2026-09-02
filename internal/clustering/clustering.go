@@ -1,4 +1,5 @@
-// Package clustering/clustering.go
+// Package clustering implements agglomerative hierarchical clustering with
+// Ward's linkage and min/max cluster-size constraints.
 package clustering
 
 import (
@@ -209,15 +210,15 @@ func CalculateOptimalClusters(totalItems, minSize, maxSize int) (int, error) {
 // It ensures that each cluster has between minSize and maxSize items.
 // Parameters:
 // - embeddings: Slice of embedding vectors.
-// - productReferenceIDs: Slice of product reference IDs corresponding to embeddings.
+// - itemIDs: Slice of item IDs corresponding to embeddings (parallel order).
 // - minSize: Minimum number of items per cluster.
 // - maxSize: Maximum number of items per cluster.
 // Returns:
-//   - A map where keys are cluster IDs (starting from 0) and values are slices of product reference IDs.
+//   - A map where keys are cluster IDs (starting from 0) and values are slices of item IDs.
 //   - A slice of reference IDs that could not be placed in a valid cluster
 //     (leftovers smaller than minSize) — never silently dropped.
 //   - An error if clustering fails.
-func PerformClusteringWithConstraints(embeddings [][]float32, productReferenceIDs []string, minSize, maxSize int) (map[int][]string, []string, error) {
+func PerformClusteringWithConstraints(embeddings [][]float32, itemIDs []string, minSize, maxSize int) (map[int][]string, []string, error) {
 	totalItems := len(embeddings)
 	log.Printf("Total items for clustering: %d", totalItems)
 
@@ -246,7 +247,7 @@ func PerformClusteringWithConstraints(embeddings [][]float32, productReferenceID
 		return nil, nil, err
 	}
 
-	// Convert clusters to map with product reference IDs. mergeUntil never
+	// Convert clusters to a map of item IDs. mergeUntil never
 	// merges past maxSize, so no cluster can exceed it here. Clusters below
 	// minSize are reported as unclustered rather than silently dropped.
 	clusterMap := make(map[int][]string)
@@ -255,7 +256,7 @@ func PerformClusteringWithConstraints(embeddings [][]float32, productReferenceID
 	for _, cluster := range clusters {
 		refs := make([]string, len(cluster.Indices))
 		for i, idx := range cluster.Indices {
-			refs[i] = productReferenceIDs[idx]
+			refs[i] = itemIDs[idx]
 		}
 		if cluster.Size < minSize {
 			unclustered = append(unclustered, refs...)
