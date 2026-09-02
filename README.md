@@ -229,7 +229,7 @@ ollama pull llava:7b          # 4.7 GB vision model
 bash scripts/download_model.sh # ~1.2 GB CLIP model
 ```
 
-**Linux:** Download ONNX Runtime from [github.com/microsoft/onnxruntime/releases](https://github.com/microsoft/onnxruntime/releases) (v1.20.1, `linux-x64` or `linux-aarch64`), extract the `.so`, set `ONNXRUNTIME_LIB_PATH`. Then install Ollama and run the model download script.
+**Linux:** Download ONNX Runtime from [github.com/microsoft/onnxruntime/releases](https://github.com/microsoft/onnxruntime/releases) (v1.26.0 — the release `yalue/onnxruntime_go` v1.30.1 is built against, and what the Dockerfile installs; `linux-x64` or `linux-aarch64`), extract the `.so`, set `ONNXRUNTIME_LIB_PATH`. Then install Ollama and run the model download script.
 
 ---
 
@@ -249,6 +249,7 @@ Environment variables (all optional):
 | `CLIP_MODEL_PATH` | `models/clip-vit-large-patch14/vision_model.onnx` | CLIP ONNX model |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama API endpoint |
 | `OLLAMA_MODEL` | `llama3.2-vision:11b` | Vision-capable model name |
+| `PORT` | `8080` | HTTP listen port |
 
 ---
 
